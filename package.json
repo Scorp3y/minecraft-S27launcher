@@ -1,0 +1,27 @@
+{
+  "name": "minecraft-s27launcher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build-manifest": "tsx tools/build-manifest.ts",
+    "update-instance": "tsx tools/update-instance.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Scorp3y/minecraft-S27launcher.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Scorp3y/minecraft-S27launcher/issues"
+  },
+  "homepage": "https://github.com/Scorp3y/minecraft-S27launcher#readme",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}

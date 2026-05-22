@@ -23,6 +23,9 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+node_modules/
+instances/
+.vs/
 
 # Tauri / Rust build
 target/

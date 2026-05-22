@@ -1,0 +1,29 @@
+{
+  "id": "mcdonaldsdnepr",
+  "name": "SECTOR 27",
+  "version": "0.1.0",
+  "minecraftVersion": "1.20.1",
+  "loader": "forge",
+  "loaderVersion": "47.2.0",
+  "files": [
+    {
+      "path": "mods/alexsmobs-1.21.1.jar",
+      "url": "https://example.com/packs/mcdonaldsdnepr/mods/alexsmobs-1.21.1.jar",
+      "sha256": "dd772255576069a82bee3f01da16f17fb19d77fe4145758a3ae88280200947c5",
+      "size": 25655463
+    },
+    {
+      "path": "mods/fabric-api-0.61.0+1.19.2.jar.deactivation",
+      "url": "https://example.com/packs/mcdonaldsdnepr/mods/fabric-api-0.61.0+1.19.2.jar.deactivation",
+      "sha256": "9ec41c8419df997b4720311421f0f8f14285fca6399f8a9c7f69457d6426e701",
+      "size": 1517325
+    },
+    {
+      "path": "mods/prefixmod-1.1.2forge1.19.2.jar",
+      "url": "https://example.com/packs/mcdonaldsdnepr/mods/prefixmod-1.1.2forge1.19.2.jar",
+      "sha256": "21b509511f64fa880b7793d4ecf009e5b90942ea6de74756bd8993788c8c467b",
+      "size": 13276022
+    }
+  ],
+  "delete": []
+}
