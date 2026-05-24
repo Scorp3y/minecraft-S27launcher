@@ -1,0 +1,18 @@
+﻿{
+  "launcherName": "SECTOR 27 Launcher",
+  "version": "0.1.0",
+  "profiles": [
+    {
+      "id": "mcdonaldsdnepr",
+      "name": "McDonalds Dnepr",
+      "description": "Основная сборка сервера Minecraft 1.19.2 Forge с модами, конфигами и автоматическими обновлениями.",
+      "minecraftVersion": "1.19.2",
+      "loader": "forge",
+      "loaderVersion": "43.4.0",
+      "serverIp": "127.0.0.1",
+      "manifestUrl": "http://localhost:3000/packs/mcdonaldsdnepr/manifest.json",
+      "bannerUrl": "http://localhost:3000/images/mcdonaldsdnepr-banner.png",
+      "status": "online"
+    }
+  ]
+}

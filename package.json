@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build-manifest": "tsx tools/build-manifest.ts",
-    "update-instance": "tsx tools/update-instance.ts"
+    "update-instance": "tsx tools/update-instance.ts",
+    "update-from-url": "tsx tools/update-from-url.ts",
+    "serve-files": "serve . -l 3000"
   },
   "repository": {
     "type": "git",
@@ -21,6 +23,7 @@
   "homepage": "https://github.com/Scorp3y/minecraft-S27launcher#readme",
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "serve": "^14.2.6",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   }

@@ -90,7 +90,7 @@ async function main() {
 
         files.push({
             path: relativePath,
-            url: `https://example.com/packs/${packId}/${relativePath}`,
+            url: `http://localhost:3000/packs/${packId}/${relativePath}`,
             sha256,
             size: stat.size,
         });
@@ -101,10 +101,10 @@ async function main() {
     const manifest: Manifest = {
         id: packId,
         name: "SECTOR 27",
-        version: "0.1.0",
-        minecraftVersion: "1.20.1",
+        version: "1.0.0",
+        minecraftVersion: "1.19.2",
         loader: "forge",
-        loaderVersion: "47.2.0",
+        loaderVersion: "43.4.0",
         files,
         delete: [],
     };
