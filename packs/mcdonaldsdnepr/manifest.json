@@ -19,5 +19,8 @@
       "size": 13276022
     }
   ],
-  "delete": []
+  "delete": [],
+  "clean": [
+    "mods"
+  ]
 }

@@ -37,6 +37,7 @@ type Manifest = {
     loaderVersion: string;
     files: ManifestFile[];
     delete: string[];
+    clean: string[];
 };
 
 const PROJECT_ROOT = process.cwd();
@@ -106,6 +107,54 @@ async function deleteFileFromInstance(instanceDir: string, relativePath: string)
     return false;
 }
 
+async function getAllFiles(dir: string): Promise<string[]> {
+    if (!(await fileExists(dir))) {
+        return [];
+    }
+
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+
+    const files = await Promise.all(
+        entries.map(async (entry) => {
+            const fullPath = path.join(dir, entry.name);
+
+            if (entry.isDirectory()) {
+                return getAllFiles(fullPath);
+            }
+
+            return [fullPath];
+        })
+    );
+
+    return files.flat();
+}
+
+function toManifestStylePath(baseDir: string, fullPath: string): string {
+    return path.relative(baseDir, fullPath).replace(/\\/g, "/");
+}
+
+async function cleanExtraFiles(instanceDir: string, manifest: Manifest): Promise<number> {
+    const allowedFiles = new Set(manifest.files.map((file) => file.path));
+    let removed = 0;
+
+    for (const cleanDir of manifest.clean ?? []) {
+        const targetCleanDir = path.join(instanceDir, cleanDir);
+        const localFiles = await getAllFiles(targetCleanDir);
+
+        for (const localFile of localFiles) {
+            const relativePath = toManifestStylePath(instanceDir, localFile);
+
+            if (!allowedFiles.has(relativePath)) {
+                await fs.unlink(localFile);
+                removed++;
+                console.log(`Удалён лишний файл: ${relativePath}`);
+            }
+        }
+    }
+
+    return removed;
+}
+
 async function updateByManifest(manifestUrl: string): Promise<void> {
     console.log("Скачиваю manifest:");
     console.log(manifestUrl);
@@ -160,9 +209,14 @@ async function updateByManifest(manifestUrl: string): Promise<void> {
 
             if (newHash !== file.sha256) {
                 await fs.unlink(targetPath);
-                throw new Error(`Хэш не совпал после скачивания: ${file.path}`);
+                failed++;
+                console.error(`Ошибка файла: ${file.path}`);
+                console.error(`Хэш не совпал после скачивания.`);
+                continue;
             }
 
+            downloaded++;
+            console.log(`Обновлён: ${file.path}`);
             downloaded++;
             console.log(`Обновлён: ${file.path}`);
         } catch (error) {
@@ -179,6 +233,9 @@ async function updateByManifest(manifestUrl: string): Promise<void> {
             deleted++;
         }
     }
+
+    const cleaned = await cleanExtraFiles(instanceDir, manifest);
+    deleted += cleaned;
 
     console.log("");
     console.log("Готово.");

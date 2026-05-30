@@ -18,6 +18,7 @@ type Manifest = {
     loaderVersion: string;
     files: ManifestFile[];
     delete: string[];
+    clean: string[];
 };
 
 const PROJECT_ROOT = process.cwd();
@@ -140,8 +141,14 @@ async function main() {
 
             if (newHash !== file.sha256) {
                 await fs.unlink(targetPath);
-                throw new Error(`Хэш не совпал после скачивания: ${file.path}`);
+                failed++;
+                console.error(`Ошибка файла: ${file.path}`);
+                console.error(`Хэш не совпал после скачивания.`);
+                continue;
             }
+
+            downloaded++;
+            console.log(`Обновлён: ${file.path}`);
 
             downloaded++;
             console.log(`Обновлён: ${file.path}`);

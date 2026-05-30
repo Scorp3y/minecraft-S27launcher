@@ -18,6 +18,7 @@ type Manifest = {
     loaderVersion: string;
     files: ManifestFile[];
     delete: string[];
+    clean: string[];
 };
 
 const PROJECT_ROOT = process.cwd();
@@ -107,6 +108,7 @@ async function main() {
         loaderVersion: "43.4.0",
         files,
         delete: [],
+        clean: ["mods"],
     };
 
     const manifestPath = path.join(packDir, "manifest.json");
