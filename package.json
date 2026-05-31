@@ -8,6 +8,7 @@
     "update-instance": "tsx tools/update-instance.ts",
     "update-from-url": "tsx tools/update-from-url.ts",
     "update-profile": "tsx tools/update-profile.ts",
+    "launch": "tsx tools/launch-minecraft.ts",
     "serve-files": "serve . -l 3000"
   },
   "repository": {
@@ -27,5 +28,8 @@
     "serve": "^14.2.6",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "minecraft-launcher-core": "^3.18.2"
   }
 }

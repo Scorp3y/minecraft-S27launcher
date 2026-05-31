@@ -4,14 +4,8 @@
   "version": "1.0.0",
   "minecraftVersion": "1.19.2",
   "loader": "forge",
-  "loaderVersion": "43.4.0",
+  "loaderVersion": "43.5.0",
   "files": [
-    {
-      "path": "mods/alexsmobs-1.21.1.jar",
-      "url": "http://localhost:3000/packs/mcdonaldsdnepr/mods/alexsmobs-1.21.1.jar",
-      "sha256": "dd772255576069a82bee3f01da16f17fb19d77fe4145758a3ae88280200947c5",
-      "size": 25655463
-    },
     {
       "path": "mods/prefixmod-1.1.2forge1.19.2.jar",
       "url": "http://localhost:3000/packs/mcdonaldsdnepr/mods/prefixmod-1.1.2forge1.19.2.jar",

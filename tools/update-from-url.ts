@@ -150,8 +150,6 @@ async function main() {
             downloaded++;
             console.log(`Обновлён: ${file.path}`);
 
-            downloaded++;
-            console.log(`Обновлён: ${file.path}`);
         } catch (error) {
             failed++;
             console.error(`Ошибка файла: ${file.path}`);

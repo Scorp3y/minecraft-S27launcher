@@ -105,7 +105,7 @@ async function main() {
         version: "1.0.0",
         minecraftVersion: "1.19.2",
         loader: "forge",
-        loaderVersion: "43.4.0",
+        loaderVersion: "43.5.0",
         files,
         delete: [],
         clean: ["mods"],
