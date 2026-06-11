@@ -12,9 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "ms27-launcher",
-        "width": 800,
-        "height": 600
+        "title": "SECTOR 27 Launcher",
+        "width": 1200,
+        "height": 720,
+        "minWidth": 1200,
+        "minHeight": 720,
+        "resizable": false,
+        "center": true,
+        "decorations": false,
+        "maximized": false,
+        "fullscreen": false,
+        "transparent": false
       }
     ],
     "security": {

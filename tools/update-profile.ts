@@ -44,7 +44,7 @@ const PROJECT_ROOT = process.cwd();
 const INSTANCES_DIR = path.join(PROJECT_ROOT, "instances");
 
 const profileId = process.argv[2];
-const profilesUrl = process.argv[3] ?? "http://localhost:3000/public/profiles.json";
+const profilesUrl = process.argv[3] ?? "http://127.0.0.1:3000/public/profiles.json";
 
 if (!profileId) {
     console.error("Ошибка: укажи id сборки.");

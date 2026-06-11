@@ -91,7 +91,7 @@ async function main() {
 
         files.push({
             path: relativePath,
-            url: `http://localhost:3000/packs/${packId}/${relativePath}`,
+            url: `http://127.0.0.1:3000/packs/${packId}/${relativePath}`,
             sha256,
             size: stat.size,
         });
@@ -105,7 +105,7 @@ async function main() {
         version: "1.0.0",
         minecraftVersion: "1.19.2",
         loader: "forge",
-        loaderVersion: "43.5.0",
+        loaderVersion: "43.4.12",
         files,
         delete: [],
         clean: ["mods"],
