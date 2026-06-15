@@ -26,6 +26,10 @@ const PROJECT_ROOT = process.cwd();
 const profileId: string = process.argv[2] ?? "mcdonaldsdnepr";
 const username: string = process.argv[3] ?? "Player";
 
+const RAM_MIN: string = process.env.RAM_MIN ?? "2G";
+const RAM_MAX: string = process.env.RAM_MAX ?? "4G";
+const JAVA_PATH: string = process.env.JAVA_PATH ?? "java";
+
 const MC_VERSION = "1.19.2";
 const FORGE_VERSION = "43.4.12";
 const CUSTOM_VERSION = `${MC_VERSION}-forge-${FORGE_VERSION}`;
@@ -92,6 +96,18 @@ function getLibraryRelativePath(library: Library): string | null {
     return null;
 }
 
+function shouldSkipLibrary(relativePath: string): boolean {
+    const normalizedPath = relativePath.replace(/\\/g, "/");
+
+    return (
+        normalizedPath.includes("natives-windows-x86") ||
+        normalizedPath.includes("natives-windows-arm64") ||
+        normalizedPath.includes("natives-linux") ||
+        normalizedPath.includes("natives-macos") ||
+        normalizedPath.includes("natives-osx")
+    );
+}
+
 async function collectClasspath(): Promise<string> {
     const vanillaJson = await readJson<VersionJson>(vanillaJsonPath);
     const forgeJson = await readJson<VersionJson>(forgeJsonPath);
@@ -110,15 +126,7 @@ async function collectClasspath(): Promise<string> {
             continue;
         }
 
-        const normalizedPath = relativePath.replace(/\\/g, "/");
-
-        if (
-            normalizedPath.includes("natives-windows-x86") ||
-            normalizedPath.includes("natives-windows-arm64") ||
-            normalizedPath.includes("natives-linux") ||
-            normalizedPath.includes("natives-macos") ||
-            normalizedPath.includes("natives-osx")
-        ) {
+        if (shouldSkipLibrary(relativePath)) {
             continue;
         }
 
@@ -157,6 +165,7 @@ function forgeModulePath(): string {
 
 async function main(): Promise<void> {
     const forgeJson = await readJson<VersionJson>(forgeJsonPath);
+
     const mainClass: string =
         forgeJson.mainClass ?? "cpw.mods.bootstraplauncher.BootstrapLauncher";
 
@@ -186,9 +195,11 @@ async function main(): Promise<void> {
         "-XX:-OmitStackTraceInFastThrow",
         "-Dfml.ignorePatchDiscrepancies=true",
         "-Dfml.ignoreInvalidMinecraftCertificates=true",
+
         `-Djava.library.path=${instanceDir}`,
-        "-Xmx4G",
-        "-Xms2G",
+
+        `-Xmx${RAM_MAX}`,
+        `-Xms${RAM_MIN}`,
 
         "-Djava.net.preferIPv6Addresses=system",
         `-DignoreList=${ignoreList}`,
@@ -267,16 +278,21 @@ async function main(): Promise<void> {
         "release",
     ];
 
+    if (process.env.DEBUG_LAUNCH === "1") {
+        console.log("");
+        console.log("[java args]");
+        console.log(args.join(" "));
+    }
     console.log("Запускаю Minecraft напрямую через Java...");
     console.log(`Профиль: ${profileId}`);
     console.log(`Ник: ${username}`);
+    console.log(`RAM: ${RAM_MIN} - ${RAM_MAX}`);
+    console.log(`Java: ${JAVA_PATH}`);
     console.log(`Папка игры: ${instanceDir}`);
     console.log(`Версия: ${CUSTOM_VERSION}`);
-    console.log("");
-    console.log("[java args]");
-    console.log(args.join(" "));
+    
 
-    const child: ChildProcess = spawn("java", args, {
+    const child: ChildProcess = spawn(JAVA_PATH, args, {
         cwd: instanceDir,
         stdio: "inherit",
     });

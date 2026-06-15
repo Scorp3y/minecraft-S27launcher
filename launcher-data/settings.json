@@ -1,0 +1,7 @@
+{
+  "username": "Scorpey",
+  "ramMin": "2G",
+  "ramMax": "8G",
+  "javaPath": "java",
+  "closeLauncherAfterStart": false
+}
