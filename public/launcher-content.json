@@ -1,0 +1,35 @@
+﻿{
+  "build": {
+    "kicker": "RPG · CREATE · MINECOLONIES",
+    "titleLine1": "McDonalds",
+    "titleLine2": "Dnepr",
+    "slogan": "RPG-сборка с технологиями Create, развитием собственной колонии, атмосферным прогрессом и дружной серверной атмосферой.",
+    "tags": [ "MineColonies", "Create", "RPG Progression", "Community" ]
+  },
+  "server": {
+    "stateLabel": "СЕРВЕР АКТИВЕН",
+    "players": "24 / 100",
+    "ping": "34 ms",
+    "version": "Forge 1.19.2 · 43.4.12"
+  },
+  "news": [
+    {
+      "tag": "СЕЗОН",
+      "title": "Открытие сборки",
+      "text": "Игроков ждёт развитие поселений, технологические цепочки Create и RPG-прогрессия.",
+      "date": "SECTOR 27"
+    },
+    {
+      "tag": "МОДЫ",
+      "title": "MineColonies и Create",
+      "text": "Строй колонию, автоматизируй производство и развивай базу вместе с другими игроками.",
+      "date": "McDonalds Dnepr"
+    },
+    {
+      "tag": "КОМЬЮНИТИ",
+      "title": "Дружеская атмосфера",
+      "text": "Сборка рассчитана на спокойную кооперативную игру, развитие и общие проекты.",
+      "date": "Online"
+    }
+  ]
+}

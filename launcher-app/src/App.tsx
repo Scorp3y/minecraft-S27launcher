@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
@@ -11,12 +11,36 @@ type LauncherSettings = {
     closeLauncherAfterStart: boolean;
 };
 
+type LauncherContent = {
+    build: {
+        kicker: string;
+        titleLine1: string;
+        titleLine2: string;
+        slogan: string;
+        tags: string[];
+    };
+    server: {
+        stateLabel: string;
+        players: string;
+        ping: string;
+        version: string;
+    };
+    news: {
+        tag: string;
+        title: string;
+        text: string;
+        date: string;
+    }[];
+};
+
 type LogType = "INFO" | "OK" | "ERR";
 
 type LogItem = {
     type: LogType;
     text: string;
 };
+
+type NavSection = "home" | "news" | "builds" | "settings";
 
 const defaultSettings: LauncherSettings = {
     username: "Scorpy",
@@ -26,17 +50,77 @@ const defaultSettings: LauncherSettings = {
     closeLauncherAfterStart: false,
 };
 
+const defaultContent: LauncherContent = {
+    build: {
+        kicker: "RPG · CREATE · MINECOLONIES",
+        titleLine1: "McDonalds",
+        titleLine2: "Dnepr",
+        slogan:
+            "RPG-сборка с технологиями Create, развитием собственной колонии, атмосферным прогрессом и дружной серверной атмосферой.",
+        tags: ["MineColonies", "Create", "RPG Progression", "Community"],
+    },
+    server: {
+        stateLabel: "СЕРВЕР АКТИВЕН",
+        players: "24 / 100",
+        ping: "34 ms",
+        version: "Forge 1.19.2 · 43.4.12",
+    },
+    news: [
+        {
+            tag: "СЕЗОН",
+            title: "Открытие сборки",
+            text: "Игроков ждёт развитие поселений, технологические цепочки Create и RPG-прогрессия.",
+            date: "SECTOR 27",
+        },
+        {
+            tag: "МОДЫ",
+            title: "MineColonies и Create",
+            text: "Строй колонию, автоматизируй производство и развивай базу вместе с другими игроками.",
+            date: "McDonalds Dnepr",
+        },
+        {
+            tag: "КОМЬЮНИТИ",
+            title: "Дружеская атмосфера",
+            text: "Сборка рассчитана на спокойную кооперативную игру, развитие и общие проекты.",
+            date: "Online",
+        },
+    ],
+};
+
 function App() {
     const [settings, setSettings] = useState<LauncherSettings>(defaultSettings);
+    const [launcherContent, setLauncherContent] =
+        useState<LauncherContent>(defaultContent);
+
     const [isLaunching, setIsLaunching] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
+
     const [logs, setLogs] = useState<LogItem[]>([
         { type: "INFO", text: "Лаунчер запущен" },
         { type: "INFO", text: "Активная сборка: McDonalds Dnepr" },
     ]);
 
     const logsRef = useRef<HTMLDivElement | null>(null);
+
+    const [activeSection, setActiveSection] = useState<NavSection>("home");
+
+    const homeRef = useRef<HTMLElement | null>(null);
+    const newsRef = useRef<HTMLElement | null>(null);
+    const buildsRef = useRef<HTMLElement | null>(null);
+    const settingsRef = useRef<HTMLElement | null>(null);
+
+    function scrollToSection(
+        section: NavSection,
+        ref: RefObject<HTMLElement | null>
+    ) {
+        setActiveSection(section);
+
+        ref.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+        });
+    }
 
     function addLog(type: LogType, text: string) {
         setLogs((prev) => [...prev, { type, text }]);
@@ -70,6 +154,33 @@ function App() {
         } catch (error) {
             console.error(error);
             addLog("ERR", `Не удалось загрузить настройки: ${String(error)}`);
+        }
+    }
+
+    async function loadLauncherContent() {
+        try {
+            const loaded = await invoke<LauncherContent>("read_launcher_content");
+
+            setLauncherContent({
+                build: {
+                    ...defaultContent.build,
+                    ...loaded.build,
+                },
+                server: {
+                    ...defaultContent.server,
+                    ...loaded.server,
+                },
+                news:
+                    loaded.news && loaded.news.length > 0
+                        ? loaded.news
+                        : defaultContent.news,
+            });
+
+            addLog("OK", "Контент лаунчера загружен");
+        } catch (error) {
+            console.error(error);
+            setLauncherContent(defaultContent);
+            addLog("ERR", `Не удалось загрузить контент: ${String(error)}`);
         }
     }
 
@@ -128,8 +239,36 @@ function App() {
 
         try {
             setIsLaunching(true);
+            setIsUpdating(true);
 
             addLog("INFO", `Подготовка профиля: ${settings.username}`);
+            addLog("INFO", "Сохранение настроек запуска");
+
+            await invoke("save_settings", {
+                settings,
+            });
+
+            addLog("OK", "Настройки применены");
+            addLog("INFO", "Проверка файлов сборки");
+            addLog("INFO", "Синхронизация mods, config и resourcepacks");
+
+            const updateResult = await invoke<string>("update_instance");
+
+            addLog("OK", "Файлы сборки проверены");
+
+            if (updateResult.trim()) {
+                const shortResult = updateResult
+                    .split("\n")
+                    .filter((line) => line.trim().length > 0)
+                    .slice(-5);
+
+                for (const line of shortResult) {
+                    addLog("INFO", line);
+                }
+            }
+
+            setIsUpdating(false);
+
             addLog("INFO", `Выделение памяти: ${settings.ramMin} - ${settings.ramMax}`);
             addLog("INFO", "Запуск Forge 1.19.2");
 
@@ -149,6 +288,8 @@ function App() {
             addLog("ERR", "Ошибка при запуске Minecraft");
             addLog("ERR", String(error));
         } finally {
+            setIsUpdating(false);
+
             setTimeout(() => {
                 setIsLaunching(false);
             }, 1500);
@@ -165,6 +306,7 @@ function App() {
 
     useEffect(() => {
         loadSettings();
+        loadLauncherContent();
     }, []);
 
     useEffect(() => {
@@ -202,19 +344,34 @@ function App() {
                     </div>
 
                     <nav className="nav">
-                        <button className="nav-item active">
+                        <button
+                            className={`nav-item ${activeSection === "home" ? "active" : ""}`}
+                            onClick={() => scrollToSection("home", homeRef)}
+                        >
                             <span>01</span>
                             Главная
                         </button>
-                        <button className="nav-item">
+
+                        <button
+                            className={`nav-item ${activeSection === "news" ? "active" : ""}`}
+                            onClick={() => scrollToSection("news", newsRef)}
+                        >
                             <span>02</span>
                             Новости
                         </button>
-                        <button className="nav-item">
+
+                        <button
+                            className={`nav-item ${activeSection === "builds" ? "active" : ""}`}
+                            onClick={() => scrollToSection("builds", buildsRef)}
+                        >
                             <span>03</span>
                             Сборки
                         </button>
-                        <button className="nav-item">
+
+                        <button
+                            className={`nav-item ${activeSection === "settings" ? "active" : ""}`}
+                            onClick={() => scrollToSection("settings", settingsRef)}
+                        >
                             <span>04</span>
                             Настройки
                         </button>
@@ -239,49 +396,45 @@ function App() {
 
                 <section className="content">
                     <div className="scroll-area">
-                        <section className="hero">
+                        <section className="hero" ref={homeRef}>
                             <div className="hero-content">
-                                <div className="hero-kicker">RPG · CREATE · MINECOLONIES</div>
+                                <div className="hero-kicker">{launcherContent.build.kicker}</div>
 
                                 <h1>
-                                    McDonalds
-                                    <span>Dnepr</span>
+                                    {launcherContent.build.titleLine1}
+                                    <span>{launcherContent.build.titleLine2}</span>
                                 </h1>
 
-                                <p>
-                                    Живая RPG-сборка с технологиями Create, развитием колонии,
-                                    атмосферным прогрессом и дружным серверным комьюнити.
-                                </p>
+                                <p>{launcherContent.build.slogan}</p>
 
                                 <div className="hero-tags">
-                                    <span>MineColonies</span>
-                                    <span>Create</span>
-                                    <span>RPG Progression</span>
-                                    <span>Community</span>
+                                    {launcherContent.build.tags.map((tag) => (
+                                        <span key={tag}>{tag}</span>
+                                    ))}
                                 </div>
                             </div>
 
                             <div className="status-card">
                                 <div className="status-top">
                                     <span className="pulse"></span>
-                                    СЕРВЕР АКТИВЕН
+                                    {launcherContent.server.stateLabel}
                                 </div>
 
                                 <div className="status-grid">
                                     <div>
                                         <span>Онлайн</span>
-                                        <strong>24 / 100</strong>
+                                        <strong>{launcherContent.server.players}</strong>
                                     </div>
 
                                     <div>
                                         <span>Пинг</span>
-                                        <strong>34 ms</strong>
+                                        <strong>{launcherContent.server.ping}</strong>
                                     </div>
                                 </div>
 
                                 <div className="status-version">
                                     <span>Версия клиента</span>
-                                    <strong>Forge 1.19.2 · 43.4.12</strong>
+                                    <strong>{launcherContent.server.version}</strong>
                                 </div>
                             </div>
                         </section>
@@ -292,8 +445,8 @@ function App() {
                                 onClick={launchMinecraft}
                                 disabled={isLaunching || isUpdating}
                             >
-                                <span>{isLaunching ? "Запуск..." : "Играть"}</span>
-                                <small>Запустить сборку</small>
+                                <span>{isLaunching ? "Запуск" : "Играть"}</span>
+                                <small>Проверка и запуск сборки</small>
                             </button>
 
                             <button
@@ -315,7 +468,42 @@ function App() {
                             </button>
                         </section>
 
-                        <section className="dashboard">
+                        <section className="build-section" ref={buildsRef}>
+                            <div className="section-heading">
+                                <div>
+                                    <h2>О сборке</h2>
+                                    <p>Основные особенности клиента McDonalds Dnepr</p>
+                                </div>
+                            </div>
+
+                            <div className="build-grid">
+                                <article className="build-card accent">
+                                    <div className="build-card-label">Версия</div>
+                                    <h3>Forge 1.19.2</h3>
+                                    <p>Стабильная база сборки с поддержкой модов, колоний и технического прогресса.</p>
+                                </article>
+
+                                <article className="build-card">
+                                    <div className="build-card-label">Геймплей</div>
+                                    <h3>RPG + Колонии</h3>
+                                    <p>Развитие персонажа, поселения, профессии жителей и постепенный рост базы.</p>
+                                </article>
+
+                                <article className="build-card">
+                                    <div className="build-card-label">Технологии</div>
+                                    <h3>Create</h3>
+                                    <p>Механизмы, автоматизация, производство ресурсов и инженерные системы.</p>
+                                </article>
+
+                                <article className="build-card">
+                                    <div className="build-card-label">Атмосфера</div>
+                                    <h3>Community</h3>
+                                    <p>Спокойная кооперативная игра, общие проекты и дружеское развитие сервера.</p>
+                                </article>
+                            </div>
+                        </section>
+
+                        <section className="dashboard" ref={settingsRef}>
                             <div className="panel player-panel">
                                 <div className="panel-header">
                                     <div>
@@ -418,6 +606,26 @@ function App() {
                                 <div className="memory-bar">
                                     <div className="memory-fill"></div>
                                 </div>
+                            </div>
+                        </section>
+
+                        <section className="news-section" ref={newsRef}>
+                            <div className="section-heading">
+                                <div>
+                                    <h2>Новости проекта</h2>
+                                    <p>Актуальная информация по сборке и серверу</p>
+                                </div>
+                            </div>
+
+                            <div className="news-grid">
+                                {launcherContent.news.map((item, index) => (
+                                    <article className="news-card" key={index}>
+                                        <div className="news-tag">{item.tag}</div>
+                                        <h3>{item.title}</h3>
+                                        <p>{item.text}</p>
+                                        <span>{item.date}</span>
+                                    </article>
+                                ))}
                             </div>
                         </section>
 

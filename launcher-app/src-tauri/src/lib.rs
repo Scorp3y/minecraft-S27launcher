@@ -150,6 +150,28 @@ fn launch_minecraft(settings: Option<LauncherSettings>, username: Option<String>
 }
 
 #[tauri::command]
+fn read_launcher_content() -> Result<serde_json::Value, String> {
+    let path = project_root()?.join("public").join("launcher-content.json");
+
+    if !path.exists() {
+        return Err(format!(
+            "Не найден файл контента лаунчера: {}",
+            path.display()
+        ));
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Не удалось прочитать launcher-content.json: {error}"))?;
+
+    let clean = raw.trim_start_matches('\u{feff}');
+
+    let value: serde_json::Value = serde_json::from_str(clean)
+        .map_err(|error| format!("Ошибка в launcher-content.json: {error}"))?;
+
+    Ok(value)
+}
+
+#[tauri::command]
 fn update_instance() -> Result<String, String> {
     let root = project_root()?;
 
@@ -185,7 +207,8 @@ pub fn run() {
             read_settings,
             save_settings,
             launch_minecraft,
-            update_instance
+            update_instance,
+            read_launcher_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
