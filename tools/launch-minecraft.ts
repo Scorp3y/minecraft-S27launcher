@@ -30,6 +30,11 @@ const RAM_MIN: string = process.env.RAM_MIN ?? "2G";
 const RAM_MAX: string = process.env.RAM_MAX ?? "4G";
 const JAVA_PATH: string = process.env.JAVA_PATH ?? "java";
 
+const SERVER_NAME = "SECTOR 27 | McDonalds Dnepr";
+const SERVER_HOST = "yarik_anime_studio.exaroton.me";
+const SERVER_PORT = "46919";
+const SERVER_ADDRESS = `${SERVER_HOST}:${SERVER_PORT}`;
+
 const MC_VERSION = "1.19.2";
 const FORGE_VERSION = "43.4.12";
 const CUSTOM_VERSION = `${MC_VERSION}-forge-${FORGE_VERSION}`;
@@ -163,11 +168,81 @@ function forgeModulePath(): string {
         .join(";");
 }
 
+function writeShort(value: number): Buffer {
+    const buffer = Buffer.alloc(2);
+    buffer.writeUInt16BE(value);
+    return buffer;
+}
+
+function writeInt(value: number): Buffer {
+    const buffer = Buffer.alloc(4);
+    buffer.writeInt32BE(value);
+    return buffer;
+}
+
+function writeStringValue(value: string): Buffer {
+    const data = Buffer.from(value, "utf-8");
+    return Buffer.concat([writeShort(data.length), data]);
+}
+
+function writeNamedTagHeader(type: number, name: string): Buffer {
+    return Buffer.concat([Buffer.from([type]), writeStringValue(name)]);
+}
+
+function writeStringTag(name: string, value: string): Buffer {
+    return Buffer.concat([
+        writeNamedTagHeader(8, name),
+        writeStringValue(value),
+    ]);
+}
+
+function writeByteTag(name: string, value: number): Buffer {
+    return Buffer.concat([
+        writeNamedTagHeader(1, name),
+        Buffer.from([value]),
+    ]);
+}
+
+function createServersDat(serverName: string, serverAddress: string): Buffer {
+    const serverCompound = Buffer.concat([
+        writeStringTag("name", serverName),
+        writeStringTag("ip", serverAddress),
+        writeByteTag("hidden", 0),
+        writeByteTag("acceptTextures", 0),
+        Buffer.from([0]),
+    ]);
+
+    const serversList = Buffer.concat([
+        writeNamedTagHeader(9, "servers"),
+        Buffer.from([10]),
+        writeInt(1),
+        serverCompound,
+    ]);
+
+    const rootCompound = Buffer.concat([
+        Buffer.from([10]),
+        writeStringValue(""),
+        serversList,
+        Buffer.from([0]),
+    ]);
+
+    return rootCompound;
+}
+
+async function writeServersDat(): Promise<void> {
+    const serversDatPath = path.join(instanceDir, "servers.dat");
+    const data = createServersDat(SERVER_NAME, SERVER_ADDRESS);
+
+    await fs.writeFile(serversDatPath, data);
+}
+
 async function main(): Promise<void> {
     const forgeJson = await readJson<VersionJson>(forgeJsonPath);
 
     const mainClass: string =
         forgeJson.mainClass ?? "cpw.mods.bootstraplauncher.BootstrapLauncher";
+
+    await writeServersDat();
 
     const classpath = await collectClasspath();
     const uuid = randomUUID().replace(/-/g, "");
@@ -278,19 +353,20 @@ async function main(): Promise<void> {
         "release",
     ];
 
-    if (process.env.DEBUG_LAUNCH === "1") {
-        console.log("");
-        console.log("[java args]");
-        console.log(args.join(" "));
-    }
     console.log("Запускаю Minecraft напрямую через Java...");
     console.log(`Профиль: ${profileId}`);
     console.log(`Ник: ${username}`);
     console.log(`RAM: ${RAM_MIN} - ${RAM_MAX}`);
     console.log(`Java: ${JAVA_PATH}`);
+    console.log(`Сервер добавлен в Multiplayer: ${SERVER_NAME} (${SERVER_ADDRESS})`);
     console.log(`Папка игры: ${instanceDir}`);
     console.log(`Версия: ${CUSTOM_VERSION}`);
-    
+
+    if (process.env.DEBUG_LAUNCH === "1") {
+        console.log("");
+        console.log("[java args]");
+        console.log(args.join(" "));
+    }
 
     const child: ChildProcess = spawn(JAVA_PATH, args, {
         cwd: instanceDir,

@@ -33,6 +33,22 @@ type LauncherContent = {
     }[];
 };
 
+type ServerState = "online" | "sleeping" | "offline";
+
+type LiveServerStatus = {
+    state: ServerState;
+    online: boolean;
+    sleeping: boolean;
+    host: string;
+    port: number;
+    playersOnline: number;
+    maxPlayers: number;
+    pingMs: number | null;
+    version: string;
+    description: string;
+    error?: string;
+};
+
 type LogType = "INFO" | "OK" | "ERR";
 
 type LogItem = {
@@ -92,8 +108,9 @@ function App() {
     const [launcherContent, setLauncherContent] =
         useState<LauncherContent>(defaultContent);
 
+    const [serverStatus, setServerStatus] = useState<LiveServerStatus | null>(null);
+
     const [isLaunching, setIsLaunching] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
 
     const [logs, setLogs] = useState<LogItem[]>([
@@ -184,50 +201,26 @@ function App() {
         }
     }
 
-    async function saveSettings() {
+    async function loadServerStatus() {
         try {
-            setIsSaving(true);
+            const status = await invoke<LiveServerStatus>("get_server_status");
+            setServerStatus(status);
+        } catch (error) {
+            console.error(error);
 
-            await invoke("save_settings", {
-                settings,
+            setServerStatus({
+                state: "offline",
+                online: false,
+                sleeping: false,
+                host: "yarik_anime_studio.exaroton.me",
+                port: 46919,
+                playersOnline: 0,
+                maxPlayers: 0,
+                pingMs: null,
+                version: "Unknown",
+                description: "",
+                error: String(error),
             });
-
-            addLog("OK", "Настройки сохранены");
-        } catch (error) {
-            console.error(error);
-            addLog("ERR", `Не удалось сохранить настройки: ${String(error)}`);
-        } finally {
-            setIsSaving(false);
-        }
-    }
-
-    async function updateInstance() {
-        try {
-            setIsUpdating(true);
-
-            addLog("INFO", "Проверка файлов сборки");
-            addLog("INFO", "Синхронизация mods, config и resourcepacks");
-
-            const result = await invoke<string>("update_instance");
-
-            addLog("OK", "Сборка проверена и готова к запуску");
-
-            if (result.trim()) {
-                const shortResult = result
-                    .split("\n")
-                    .filter((line) => line.trim().length > 0)
-                    .slice(-6);
-
-                for (const line of shortResult) {
-                    addLog("INFO", line);
-                }
-            }
-        } catch (error) {
-            console.error(error);
-            addLog("ERR", "Ошибка при проверке файлов");
-            addLog("ERR", String(error));
-        } finally {
-            setIsUpdating(false);
         }
     }
 
@@ -307,6 +300,15 @@ function App() {
     useEffect(() => {
         loadSettings();
         loadLauncherContent();
+        loadServerStatus();
+
+        const interval = window.setInterval(() => {
+            loadServerStatus();
+        }, 30000);
+
+        return () => {
+            window.clearInterval(interval);
+        };
     }, []);
 
     useEffect(() => {
@@ -315,6 +317,30 @@ function App() {
             behavior: "smooth",
         });
     }, [logs]);
+
+    const serverState = serverStatus?.state ?? "offline";
+
+    const serverStateLabel =
+        serverState === "online"
+            ? "СЕРВЕР АКТИВЕН"
+            : serverState === "sleeping"
+                ? "СЕРВЕР СПИТ"
+                : "СЕРВЕР НЕДОСТУПЕН";
+
+    const serverPlayers =
+        serverStatus && serverStatus.maxPlayers > 0
+            ? `${serverStatus.playersOnline} / ${serverStatus.maxPlayers}`
+            : "—";
+
+    const serverPing =
+        serverStatus?.pingMs !== null && serverStatus?.pingMs !== undefined
+            ? `${serverStatus.pingMs} ms`
+            : "—";
+
+    const serverVersion =
+        serverStatus?.version && serverStatus.version !== "Unknown"
+            ? serverStatus.version
+            : launcherContent.server.version;
 
     return (
         <main className="app">
@@ -415,56 +441,38 @@ function App() {
                             </div>
 
                             <div className="status-card">
-                                <div className="status-top">
-                                    <span className="pulse"></span>
-                                    {launcherContent.server.stateLabel}
+                                <div className={`status-top ${serverState}`}>
+                                    <span className={`pulse ${serverState}`}></span>
+                                    {serverStateLabel}
                                 </div>
 
                                 <div className="status-grid">
                                     <div>
                                         <span>Онлайн</span>
-                                        <strong>{launcherContent.server.players}</strong>
+                                        <strong>{serverPlayers}</strong>
                                     </div>
 
                                     <div>
                                         <span>Пинг</span>
-                                        <strong>{launcherContent.server.ping}</strong>
+                                        <strong>{serverPing}</strong>
                                     </div>
                                 </div>
 
                                 <div className="status-version">
                                     <span>Версия клиента</span>
-                                    <strong>{launcherContent.server.version}</strong>
+                                    <strong>{serverVersion}</strong>
                                 </div>
                             </div>
                         </section>
 
-                        <section className="quick-actions">
+                        <section className="quick-actions play-only">
                             <button
                                 className="play-button"
                                 onClick={launchMinecraft}
                                 disabled={isLaunching || isUpdating}
                             >
                                 <span>{isLaunching ? "Запуск" : "Играть"}</span>
-                                <small>Проверка и запуск сборки</small>
-                            </button>
-
-                            <button
-                                className="update-button"
-                                onClick={updateInstance}
-                                disabled={isUpdating || isLaunching}
-                            >
-                                <span>{isUpdating ? "Проверка" : "Проверить"}</span>
-                                <small>Файлы сборки</small>
-                            </button>
-
-                            <button
-                                className="secondary-button"
-                                onClick={saveSettings}
-                                disabled={isSaving}
-                            >
-                                <span>Сохранить</span>
-                                <small>Профиль и память</small>
+                                <small>Проверка файлов и запуск клиента</small>
                             </button>
                         </section>
 

@@ -433,9 +433,23 @@ button {
 
 .quick-actions {
     display: grid;
-    grid-template-columns: 1.55fr 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 14px;
 }
+
+    .quick-actions.play-only .play-button {
+        min-height: 88px;
+        align-items: center;
+        text-align: center;
+    }
+
+        .quick-actions.play-only .play-button span {
+            font-size: 26px;
+        }
+
+        .quick-actions.play-only .play-button small {
+            font-size: 13px;
+        }
 
 .play-button,
 .update-button,
@@ -929,4 +943,31 @@ button {
     .build-grid {
         grid-template-columns: 1fr;
     }
+}
+
+.status-top.offline {
+    color: #ff5570;
+}
+
+.status-top.sleeping {
+    color: #ffc857;
+}
+
+.status-top.online {
+    color: #00ffa3;
+}
+
+.pulse.online {
+    background: #00ffa3;
+    box-shadow: 0 0 20px rgba(0, 255, 163, 0.9);
+}
+
+.pulse.sleeping {
+    background: #ffc857;
+    box-shadow: 0 0 20px rgba(255, 200, 87, 0.9);
+}
+
+.pulse.offline {
+    background: #ff5570;
+    box-shadow: 0 0 20px rgba(255, 85, 112, 0.9);
 }

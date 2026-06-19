@@ -9,7 +9,8 @@
     "update-from-url": "tsx tools/update-from-url.ts",
     "update-profile": "tsx tools/update-profile.ts",
     "launch": "tsx tools/launch-minecraft.ts",
-    "serve-files": "serve . -l 3000"
+    "serve-files": "serve . -l 3000",
+    "server-status": "tsx tools/server-status.ts"
   },
   "repository": {
     "type": "git",
@@ -30,6 +31,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "minecraft-launcher-core": "^3.18.2"
+    "minecraft-launcher-core": "^3.18.2",
+    "minecraft-server-util": "^5.4.4"
   }
 }

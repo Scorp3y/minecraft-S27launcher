@@ -199,6 +199,51 @@ fn update_instance() -> Result<String, String> {
     Ok(format!("{}\n{}", stdout, stderr))
 }
 
+#[tauri::command]
+fn get_server_status() -> Result<serde_json::Value, String> {
+    let root = project_root()?;
+
+    let output = Command::new("npm.cmd")
+        .current_dir(&root)
+        .arg("run")
+        .arg("--silent")
+        .arg("server-status")
+        .arg("--")
+        .arg("yarik_anime_studio.exaroton.me")
+        .arg("46919")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("Не удалось получить статус сервера: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        return Err(format!(
+            "server-status завершился ошибкой.\nSTDOUT:\n{}\nSTDERR:\n{}",
+            stdout, stderr
+        ));
+    }
+
+    let json_line = stdout
+        .lines()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| line.starts_with('{') && line.ends_with('}'))
+        .ok_or_else(|| {
+            format!(
+                "server-status не вернул JSON.\nSTDOUT:\n{}\nSTDERR:\n{}",
+                stdout, stderr
+            )
+        })?;
+
+    let value: serde_json::Value = serde_json::from_str(json_line)
+        .map_err(|error| format!("Ошибка JSON от server-status: {error}\n{json_line}"))?;
+
+    Ok(value)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -208,7 +253,8 @@ pub fn run() {
             save_settings,
             launch_minecraft,
             update_instance,
-            read_launcher_content
+            read_launcher_content,
+            get_server_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
