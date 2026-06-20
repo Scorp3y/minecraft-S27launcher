@@ -1,0 +1,20 @@
+{
+  "id": "mcdonaldsdnepr",
+  "name": "SECTOR 27",
+  "version": "1.0.0",
+  "minecraftVersion": "1.19.2",
+  "loader": "forge",
+  "loaderVersion": "43.4.12",
+  "files": [
+    {
+      "path": "mods/prefixmod-1.1.2forge1.19.2.jar",
+      "url": "http://127.0.0.1:3000/packs/mcdonaldsdnepr/mods/prefixmod-1.1.2forge1.19.2.jar",
+      "sha256": "21b509511f64fa880b7793d4ecf009e5b90942ea6de74756bd8993788c8c467b",
+      "size": 13276022
+    }
+  ],
+  "delete": [],
+  "clean": [
+    "mods"
+  ]
+}

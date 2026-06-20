@@ -1,0 +1,7 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+jobs = 1
+target-dir = 'C:\cargo-target\s27'
+
+[target.x86_64-pc-windows-msvc]
+linker = 'C:\Users\artem\VSLink\link.exe'

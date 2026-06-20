@@ -22,6 +22,7 @@ type VersionJson = {
 };
 
 const PROJECT_ROOT = process.cwd();
+const INSTANCE_ROOT = process.env.INSTANCE_ROOT ?? path.join(PROJECT_ROOT, "instances");
 
 const profileId: string = process.argv[2] ?? "mcdonaldsdnepr";
 const username: string = process.argv[3] ?? "Player";
@@ -39,7 +40,7 @@ const MC_VERSION = "1.19.2";
 const FORGE_VERSION = "43.4.12";
 const CUSTOM_VERSION = `${MC_VERSION}-forge-${FORGE_VERSION}`;
 
-const instanceDir = path.join(PROJECT_ROOT, "instances", profileId);
+const instanceDir = path.join(INSTANCE_ROOT, profileId);
 const librariesDir = path.join(instanceDir, "libraries");
 const assetsDir = path.join(instanceDir, "assets");
 
@@ -359,6 +360,7 @@ async function main(): Promise<void> {
     console.log(`RAM: ${RAM_MIN} - ${RAM_MAX}`);
     console.log(`Java: ${JAVA_PATH}`);
     console.log(`Сервер добавлен в Multiplayer: ${SERVER_NAME} (${SERVER_ADDRESS})`);
+    console.log(`Instance root: ${INSTANCE_ROOT}`);
     console.log(`Папка игры: ${instanceDir}`);
     console.log(`Версия: ${CUSTOM_VERSION}`);
 

@@ -49,6 +49,24 @@ type LiveServerStatus = {
     error?: string;
 };
 
+type RuntimeInfo = {
+    root: string;
+    launcherData: string;
+    settingsFile: string;
+    logs: string;
+    logFile: string;
+    instances: string;
+    activeInstance: string;
+    cache: string;
+    downloadsCache: string;
+    manifestsCache: string;
+    iconsCache: string;
+    temp: string;
+    backups: string;
+    runtime: string;
+    runtimeFile: string;
+};
+
 type LogType = "INFO" | "OK" | "ERR";
 
 type LogItem = {
@@ -140,7 +158,19 @@ function App() {
     }
 
     function addLog(type: LogType, text: string) {
+        const time = new Date().toLocaleTimeString("ru-RU", {
+            hour12: false,
+        });
+
+        const fileLine = `[${time}] [${type}] ${text}`;
+
         setLogs((prev) => [...prev, { type, text }]);
+
+        void invoke("append_launcher_log", {
+            line: fileLine,
+        }).catch((error) => {
+            console.error("Не удалось записать launcher.log:", error);
+        });
     }
 
     function updateSettings<K extends keyof LauncherSettings>(
@@ -151,6 +181,16 @@ function App() {
             ...prev,
             [key]: value,
         }));
+    }
+
+    async function prepareRuntime() {
+        try {
+            const runtime = await invoke<RuntimeInfo>("prepare_runtime");
+            addLog("OK", `Runtime готов: ${runtime.root}`);
+        } catch (error) {
+            console.error(error);
+            addLog("ERR", `Не удалось подготовить runtime: ${String(error)}`);
+        }
     }
 
     async function loadSettings() {
@@ -298,6 +338,7 @@ function App() {
     }
 
     useEffect(() => {
+        prepareRuntime();
         loadSettings();
         loadLauncherContent();
         loadServerStatus();
