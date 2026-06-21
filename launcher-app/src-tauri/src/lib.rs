@@ -1,4 +1,5 @@
 ﻿use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -55,6 +56,16 @@ struct RuntimeInfo {
     backups: String,
     runtime: String,
     runtime_file: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchProgressEvent {
+    step: String,
+    label: String,
+    message: String,
+    percent: u8,
+    status: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -257,6 +268,69 @@ fn runtime_file_path() -> Result<PathBuf, String> {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn emit_progress(
+    app: Option<&tauri::AppHandle>,
+    step: &str,
+    label: &str,
+    message: &str,
+    percent: u8,
+    status: &str,
+) {
+    if let Some(app) = app {
+        let payload = LaunchProgressEvent {
+            step: step.to_string(),
+            label: label.to_string(),
+            message: message.to_string(),
+            percent: percent.min(100),
+            status: status.to_string(),
+        };
+
+        let _ = app.emit("launch-progress", payload);
+    }
+}
+
+fn open_in_file_manager(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("Путь не найден: {}", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Не удалось открыть проводник: {error}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Не удалось открыть Finder: {error}"))
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Не удалось открыть файловый менеджер: {error}"))
+    }
 }
 
 fn read_json_file<T>(path: &Path) -> Result<T, String>
@@ -1097,7 +1171,163 @@ fn clean_extra_files(
     Ok(removed)
 }
 
-fn update_by_manifest(manifest: &Manifest, logs: &mut Vec<String>) -> Result<(), String> {
+fn manifest_stage(path: &str) -> &'static str {
+    let normalized = path.replace('\\', "/");
+
+    if normalized.starts_with("mods/") {
+        "mods"
+    } else if normalized.starts_with("config/") {
+        "config"
+    } else if normalized.starts_with("resourcepacks/") {
+        "resourcepacks"
+    } else {
+        "manifest"
+    }
+}
+
+fn stage_label(stage: &str) -> &'static str {
+    match stage {
+        "mods" => "Синхронизация mods",
+        "config" => "Синхронизация config",
+        "resourcepacks" => "Синхронизация resourcepacks",
+        _ => "Проверка manifest",
+    }
+}
+
+fn process_manifest_file(
+    instance_dir: &Path,
+    file: &ManifestFile,
+    logs: &mut Vec<String>,
+    downloaded: &mut u32,
+    skipped: &mut u32,
+    failed: &mut u32,
+) -> Result<(), String> {
+    let target_path = safe_join(instance_dir, &file.path)?;
+
+    let mut needs_update = false;
+
+    if !target_path.exists() {
+        needs_update = true;
+        logs.push(format!("Нет файла: {}", file.path));
+    } else {
+        let current_hash = sha256_file(&target_path)?;
+
+        if current_hash != file.sha256 {
+            needs_update = true;
+            logs.push(format!("Файл устарел или изменён: {}", file.path));
+        }
+    }
+
+    if !needs_update {
+        *skipped += 1;
+        logs.push(format!("ОК: {}", file.path));
+        return Ok(());
+    }
+
+    logs.push(format!("Копирую: {}", file.url));
+
+    match copy_file_from_source(&file.url, &target_path) {
+        Ok(()) => {
+            let new_hash = sha256_file(&target_path)?;
+
+            if new_hash != file.sha256 {
+                let _ = fs::remove_file(&target_path);
+                *failed += 1;
+                logs.push(format!("Ошибка файла: {}", file.path));
+                logs.push("Хэш не совпал после копирования".to_string());
+                return Ok(());
+            }
+
+            *downloaded += 1;
+            logs.push(format!("Обновлён: {}", file.path));
+        }
+        Err(error) => {
+            *failed += 1;
+            logs.push(format!("Ошибка файла: {}", file.path));
+            logs.push(error);
+        }
+    }
+
+    Ok(())
+}
+
+fn sync_manifest_stage(
+    app: Option<&tauri::AppHandle>,
+    instance_dir: &Path,
+    manifest: &Manifest,
+    stage: &str,
+    percent_from: u8,
+    percent_to: u8,
+    logs: &mut Vec<String>,
+    downloaded: &mut u32,
+    skipped: &mut u32,
+    failed: &mut u32,
+) -> Result<(), String> {
+    let label = stage_label(stage);
+    let stage_files = manifest
+        .files
+        .iter()
+        .filter(|file| manifest_stage(&file.path) == stage)
+        .collect::<Vec<&ManifestFile>>();
+
+    if stage_files.is_empty() {
+        emit_progress(
+            app,
+            stage,
+            label,
+            "Файлов для этого этапа нет",
+            percent_to,
+            "done",
+        );
+
+        logs.push(format!("{label}: файлов нет"));
+        return Ok(());
+    }
+
+    emit_progress(
+        app,
+        stage,
+        label,
+        &format!("Файлов: {}", stage_files.len()),
+        percent_from,
+        "active",
+    );
+
+    let total = stage_files.len().max(1) as f32;
+
+    for (index, file) in stage_files.iter().enumerate() {
+        let local_percent = percent_from as f32
+            + (((index + 1) as f32 / total) * (percent_to.saturating_sub(percent_from) as f32));
+
+        emit_progress(
+            app,
+            stage,
+            label,
+            &format!("{}/{} · {}", index + 1, stage_files.len(), file.path),
+            local_percent.round() as u8,
+            "active",
+        );
+
+        process_manifest_file(instance_dir, file, logs, downloaded, skipped, failed)?;
+    }
+
+    emit_progress(
+        app,
+        stage,
+        label,
+        "Этап завершён",
+        percent_to,
+        "done",
+    );
+
+    Ok(())
+}
+
+fn update_by_manifest(
+    manifest: &Manifest,
+    logs: &mut Vec<String>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
     let instance_dir = app_instance_dir(&manifest.id)?;
 
     fs::create_dir_all(&instance_dir)
@@ -1115,53 +1345,66 @@ fn update_by_manifest(manifest: &Manifest, logs: &mut Vec<String>) -> Result<(),
     let mut deleted = 0u32;
     let mut failed = 0u32;
 
-    for file in &manifest.files {
-        let target_path = safe_join(&instance_dir, &file.path)?;
+    sync_manifest_stage(
+        app,
+        &instance_dir,
+        manifest,
+        "manifest",
+        18,
+        30,
+        logs,
+        &mut downloaded,
+        &mut skipped,
+        &mut failed,
+    )?;
 
-        let mut needs_update = false;
+    sync_manifest_stage(
+        app,
+        &instance_dir,
+        manifest,
+        "mods",
+        31,
+        48,
+        logs,
+        &mut downloaded,
+        &mut skipped,
+        &mut failed,
+    )?;
 
-        if !target_path.exists() {
-            needs_update = true;
-            logs.push(format!("Нет файла: {}", file.path));
-        } else {
-            let current_hash = sha256_file(&target_path)?;
+    sync_manifest_stage(
+        app,
+        &instance_dir,
+        manifest,
+        "config",
+        49,
+        62,
+        logs,
+        &mut downloaded,
+        &mut skipped,
+        &mut failed,
+    )?;
 
-            if current_hash != file.sha256 {
-                needs_update = true;
-                logs.push(format!("Файл устарел или изменён: {}", file.path));
-            }
-        }
+    sync_manifest_stage(
+        app,
+        &instance_dir,
+        manifest,
+        "resourcepacks",
+        63,
+        74,
+        logs,
+        &mut downloaded,
+        &mut skipped,
+        &mut failed,
+    )?;
 
-        if !needs_update {
-            skipped += 1;
-            logs.push(format!("ОК: {}", file.path));
-            continue;
-        }
-
-        logs.push(format!("Копирую: {}", file.url));
-
-        match copy_file_from_source(&file.url, &target_path) {
-            Ok(()) => {
-                let new_hash = sha256_file(&target_path)?;
-
-                if new_hash != file.sha256 {
-                    let _ = fs::remove_file(&target_path);
-                    failed += 1;
-                    logs.push(format!("Ошибка файла: {}", file.path));
-                    logs.push("Хэш не совпал после копирования".to_string());
-                    continue;
-                }
-
-                downloaded += 1;
-                logs.push(format!("Обновлён: {}", file.path));
-            }
-            Err(error) => {
-                failed += 1;
-                logs.push(format!("Ошибка файла: {}", file.path));
-                logs.push(error);
-            }
-        }
-    }
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Очистка лишних файлов",
+        "Удаление файлов, которых нет в manifest",
+        75,
+        "active",
+    );
 
     for file_to_delete in &manifest.delete {
         if delete_file_from_instance(&instance_dir, file_to_delete)? {
@@ -1178,6 +1421,15 @@ fn update_by_manifest(manifest: &Manifest, logs: &mut Vec<String>) -> Result<(),
     logs.push(format!("Удалено: {deleted}"));
     logs.push(format!("Ошибок: {failed}"));
 
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Проверка файлов завершена",
+        &format!("Обновлено: {downloaded} · актуальных: {skipped} · ошибок: {failed}"),
+        76,
+        if failed > 0 { "error" } else { "done" },
+    );
+
     if failed > 0 {
         return Err(logs.join("\n"));
     }
@@ -1185,12 +1437,21 @@ fn update_by_manifest(manifest: &Manifest, logs: &mut Vec<String>) -> Result<(),
     Ok(())
 }
 
-fn update_profile_direct(profile_id: &str) -> Result<String, String> {
+fn update_profile_direct(profile_id: &str, app: Option<&tauri::AppHandle>) -> Result<String, String> {
     let mut logs = Vec::new();
 
     ensure_instance_exists_in_appdata(profile_id)?;
 
     logs.push("Читаю profiles.json".to_string());
+
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка manifest",
+        "Чтение profiles.json",
+        12,
+        "active",
+    );
 
     let config = read_profiles_config()?;
 
@@ -1217,9 +1478,18 @@ fn update_profile_direct(profile_id: &str) -> Result<String, String> {
     logs.push(format!("Server IP: {}", profile.server_ip));
     logs.push(format!("Manifest: {}", profile.manifest_url));
 
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка manifest",
+        &format!("Чтение manifest: {}", profile.manifest_url),
+        16,
+        "active",
+    );
+
     let manifest: Manifest = load_json_from_source(&profile.manifest_url)?;
 
-    update_by_manifest(&manifest, &mut logs)?;
+    update_by_manifest(&manifest, &mut logs, app)?;
 
     Ok(logs.join("\n"))
 }
@@ -1450,12 +1720,32 @@ fn read_launcher_content() -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-fn update_instance_blocking() -> Result<String, String> {
+fn update_instance_blocking(app: Option<tauri::AppHandle>) -> Result<String, String> {
+    emit_progress(
+        app.as_ref(),
+        "prepare",
+        "Подготовка лаунчера",
+        "Создание runtime-папок",
+        4,
+        "active",
+    );
+
     prepare_runtime()?;
-    update_profile_direct(PROFILE_ID)
+
+    emit_progress(
+        app.as_ref(),
+        "prepare",
+        "Подготовка лаунчера",
+        "Runtime готов",
+        10,
+        "done",
+    );
+
+    update_profile_direct(PROFILE_ID, app.as_ref())
 }
 
 fn launch_minecraft_blocking(
+    app: Option<tauri::AppHandle>,
     settings: Option<LauncherSettings>,
     username: Option<String>,
 ) -> Result<String, String> {
@@ -1481,7 +1771,34 @@ fn launch_minecraft_blocking(
         ));
     }
 
+    emit_progress(
+        app.as_ref(),
+        "servers",
+        "Создание servers.dat",
+        &format!("Добавление сервера {SERVER_NAME}"),
+        80,
+        "active",
+    );
+
     write_servers_dat(&instance_dir)?;
+
+    emit_progress(
+        app.as_ref(),
+        "servers",
+        "Создание servers.dat",
+        "Сервер добавлен в Multiplayer",
+        84,
+        "done",
+    );
+
+    emit_progress(
+        app.as_ref(),
+        "launch",
+        "Запуск Minecraft",
+        "Сбор Java-аргументов Forge",
+        88,
+        "active",
+    );
 
     let args = build_java_args(&final_settings, &instance_dir, &final_settings.username)?;
 
@@ -1494,10 +1811,96 @@ fn launch_minecraft_blocking(
         .spawn()
         .map_err(|error| format!("Не удалось запустить Java напрямую: {error}"))?;
 
+    emit_progress(
+        app.as_ref(),
+        "launch",
+        "Запуск Minecraft",
+        "Процесс Java запущен",
+        96,
+        "done",
+    );
+
+    emit_progress(
+        app.as_ref(),
+        "done",
+        "Готово",
+        "Minecraft запускается",
+        100,
+        "done",
+    );
+
     Ok(format!(
         "Minecraft запускается напрямую через Java для игрока {}",
         final_settings.username
     ))
+}
+
+fn repair_instance_blocking(app: Option<tauri::AppHandle>) -> Result<String, String> {
+    let mut logs = Vec::new();
+
+    emit_progress(
+        app.as_ref(),
+        "prepare",
+        "Подготовка лаунчера",
+        "Подготовка runtime перед ремонтом",
+        4,
+        "active",
+    );
+
+    prepare_runtime()?;
+
+    let instance_dir = ensure_instance_exists_in_appdata(PROFILE_ID)?;
+
+    logs.push(format!("Ремонт сборки: {PROFILE_ID}"));
+    logs.push(format!("Папка сборки: {}", instance_dir.display()));
+    logs.push("Очистка mods, config и resourcepacks".to_string());
+
+    clean_pack_dirs(&instance_dir)?;
+
+    emit_progress(
+        app.as_ref(),
+        "prepare",
+        "Подготовка лаунчера",
+        "Папки сборки очищены",
+        10,
+        "done",
+    );
+
+    let update_log = update_profile_direct(PROFILE_ID, app.as_ref())?;
+    logs.push(update_log);
+
+    emit_progress(
+        app.as_ref(),
+        "servers",
+        "Создание servers.dat",
+        "Восстановление списка серверов",
+        80,
+        "active",
+    );
+
+    write_servers_dat(&instance_dir)?;
+
+    emit_progress(
+        app.as_ref(),
+        "servers",
+        "Создание servers.dat",
+        "servers.dat восстановлен",
+        90,
+        "done",
+    );
+
+    emit_progress(
+        app.as_ref(),
+        "done",
+        "Готово",
+        "Сборка починена",
+        100,
+        "done",
+    );
+
+    logs.push("Ремонт завершён.".to_string());
+
+    Ok(logs.join("\n"))
 }
 
 fn get_server_status_blocking() -> Result<serde_json::Value, String> {
@@ -1513,20 +1916,99 @@ fn get_server_status_blocking() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn update_instance() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(update_instance_blocking)
+fn open_game_folder() -> Result<(), String> {
+    prepare_runtime()?;
+
+    let dir = app_instance_dir(PROFILE_ID)?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Не удалось создать папку игры {}: {error}", dir.display()))?;
+
+    open_in_file_manager(&dir)
+}
+
+#[tauri::command]
+fn open_logs_folder() -> Result<(), String> {
+    prepare_runtime()?;
+
+    let dir = logs_dir()?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Не удалось создать папку логов {}: {error}", dir.display()))?;
+
+    open_in_file_manager(&dir)
+}
+
+#[tauri::command]
+async fn update_instance(app: tauri::AppHandle) -> Result<String, String> {
+    let app_for_error = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || update_instance_blocking(Some(app)))
         .await
-        .map_err(|error| format!("Фоновая задача обновления сорвалась: {error}"))?
+        .map_err(|error| format!("Фоновая задача обновления сорвалась: {error}"))?;
+
+    if let Err(error) = result.as_ref() {
+        emit_progress(
+            Some(&app_for_error),
+            "manifest",
+            "Проверка manifest",
+            error,
+            20,
+            "error",
+        );
+    }
+
+    result
 }
 
 #[tauri::command]
 async fn launch_minecraft(
+    app: tauri::AppHandle,
     settings: Option<LauncherSettings>,
     username: Option<String>,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || launch_minecraft_blocking(settings, username))
+    let app_for_error = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        launch_minecraft_blocking(Some(app), settings, username)
+    })
+    .await
+    .map_err(|error| format!("Фоновая задача запуска сорвалась: {error}"))?;
+
+    if let Err(error) = result.as_ref() {
+        emit_progress(
+            Some(&app_for_error),
+            "launch",
+            "Запуск Minecraft",
+            error,
+            90,
+            "error",
+        );
+    }
+
+    result
+}
+
+#[tauri::command]
+async fn repair_instance(app: tauri::AppHandle) -> Result<String, String> {
+    let app_for_error = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || repair_instance_blocking(Some(app)))
         .await
-        .map_err(|error| format!("Фоновая задача запуска сорвалась: {error}"))?
+        .map_err(|error| format!("Фоновая задача ремонта сорвалась: {error}"))?;
+
+    if let Err(error) = result.as_ref() {
+        emit_progress(
+            Some(&app_for_error),
+            "manifest",
+            "Проверка manifest",
+            error,
+            20,
+            "error",
+        );
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -1570,6 +2052,9 @@ pub fn run() {
             save_settings,
             launch_minecraft,
             update_instance,
+            repair_instance,
+            open_game_folder,
+            open_logs_folder,
             read_launcher_content,
             get_server_status,
             append_launcher_log

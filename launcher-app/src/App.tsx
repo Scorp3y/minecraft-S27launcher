@@ -1,5 +1,6 @@
-﻿import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 
@@ -34,6 +35,33 @@ type LauncherContent = {
 };
 
 type ServerState = "online" | "sleeping" | "offline";
+
+type LaunchStepId =
+    | "prepare"
+    | "manifest"
+    | "mods"
+    | "config"
+    | "resourcepacks"
+    | "servers"
+    | "launch"
+    | "done";
+
+type ProgressStatus = "pending" | "active" | "done" | "error";
+
+type LaunchProgressEvent = {
+    step: string;
+    label: string;
+    message: string;
+    percent: number;
+    status: string;
+};
+
+type LaunchProgress = {
+    currentStep: LaunchStepId;
+    message: string;
+    percent: number;
+    status: ProgressStatus;
+};
 
 type LiveServerStatus = {
     state: ServerState;
@@ -74,7 +102,9 @@ type LogItem = {
     text: string;
 };
 
-type NavSection = "home" | "news" | "builds" | "settings";
+type NavSection = "home" | "builds" | "settings" | "news";
+
+const SERVER_ADDRESS = "yarik_anime_studio.exaroton.me:46919";
 
 const defaultSettings: LauncherSettings = {
     username: "Scorpy",
@@ -121,6 +151,49 @@ const defaultContent: LauncherContent = {
     ],
 };
 
+const launchSteps: { id: LaunchStepId; label: string }[] = [
+    { id: "prepare", label: "Подготовка" },
+    { id: "manifest", label: "Manifest" },
+    { id: "mods", label: "Mods" },
+    { id: "config", label: "Config" },
+    { id: "resourcepacks", label: "Resourcepacks" },
+    { id: "servers", label: "servers.dat" },
+    { id: "launch", label: "Запуск" },
+    { id: "done", label: "Готово" },
+];
+
+const initialProgress: LaunchProgress = {
+    currentStep: "prepare",
+    message: "Готов к запуску",
+    percent: 0,
+    status: "pending",
+};
+
+function isLaunchStepId(value: string): value is LaunchStepId {
+    return launchSteps.some((step) => step.id === value);
+}
+
+function normalizeProgressStatus(value: string): ProgressStatus {
+    if (
+        value === "pending" ||
+        value === "active" ||
+        value === "done" ||
+        value === "error"
+    ) {
+        return value;
+    }
+
+    return "active";
+}
+
+function clampPercent(value: number) {
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+
+    return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function App() {
     const [settings, setSettings] = useState<LauncherSettings>(defaultSettings);
     const [launcherContent, setLauncherContent] =
@@ -130,6 +203,11 @@ function App() {
 
     const [isLaunching, setIsLaunching] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
+    const [isRepairing, setIsRepairing] = useState(false);
+
+    const [launchProgress, setLaunchProgress] =
+        useState<LaunchProgress>(initialProgress);
+    const [launchError, setLaunchError] = useState<string | null>(null);
 
     const [logs, setLogs] = useState<LogItem[]>([
         { type: "INFO", text: "Лаунчер запущен" },
@@ -141,9 +219,9 @@ function App() {
     const [activeSection, setActiveSection] = useState<NavSection>("home");
 
     const homeRef = useRef<HTMLElement | null>(null);
-    const newsRef = useRef<HTMLElement | null>(null);
-    const buildsRef = useRef<HTMLElement | null>(null);
+    const aboutRef = useRef<HTMLElement | null>(null);
     const settingsRef = useRef<HTMLElement | null>(null);
+    const newsRef = useRef<HTMLElement | null>(null);
 
     function scrollToSection(
         section: NavSection,
@@ -171,6 +249,55 @@ function App() {
         }).catch((error) => {
             console.error("Не удалось записать launcher.log:", error);
         });
+    }
+
+    function resetLaunchProgress(message = "Подготовка запуска") {
+        setLaunchError(null);
+        setLaunchProgress({
+            currentStep: "prepare",
+            message,
+            percent: 1,
+            status: "active",
+        });
+    }
+
+    function applyProgressEvent(event: LaunchProgressEvent) {
+        const currentStep = isLaunchStepId(event.step) ? event.step : "prepare";
+        const status = normalizeProgressStatus(event.status);
+
+        setLaunchProgress({
+            currentStep,
+            message: event.message || event.label || "Выполняется операция",
+            percent: clampPercent(event.percent),
+            status,
+        });
+
+        if (status === "error") {
+            setLaunchError(event.message || "Неизвестная ошибка запуска");
+        }
+    }
+
+    function setProgressError(error: unknown) {
+        const message = String(error);
+
+        setLaunchError(message);
+        setLaunchProgress((prev) => ({
+            ...prev,
+            message,
+            status: "error",
+        }));
+    }
+
+    function logBackendSummary(result: string, maxLines = 7) {
+        const shortResult = result
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+            .slice(-maxLines);
+
+        for (const line of shortResult) {
+            addLog("INFO", line);
+        }
     }
 
     function updateSettings<K extends keyof LauncherSettings>(
@@ -267,10 +394,12 @@ function App() {
     async function launchMinecraft() {
         if (!settings.username.trim()) {
             addLog("ERR", "Введите ник игрока");
+            setLaunchError("Введите ник игрока");
             return;
         }
 
         try {
+            resetLaunchProgress("Подготовка профиля");
             setIsLaunching(true);
             setIsUpdating(true);
 
@@ -282,22 +411,13 @@ function App() {
             });
 
             addLog("OK", "Настройки применены");
-            addLog("INFO", "Проверка файлов сборки");
-            addLog("INFO", "Синхронизация mods, config и resourcepacks");
 
             const updateResult = await invoke<string>("update_instance");
 
             addLog("OK", "Файлы сборки проверены");
 
             if (updateResult.trim()) {
-                const shortResult = updateResult
-                    .split("\n")
-                    .filter((line) => line.trim().length > 0)
-                    .slice(-5);
-
-                for (const line of shortResult) {
-                    addLog("INFO", line);
-                }
+                logBackendSummary(updateResult);
             }
 
             setIsUpdating(false);
@@ -305,11 +425,11 @@ function App() {
             addLog("INFO", `Выделение памяти: ${settings.ramMin} - ${settings.ramMax}`);
             addLog("INFO", "Запуск Forge 1.19.2");
 
-            await invoke<string>("launch_minecraft", {
+            const launchResult = await invoke<string>("launch_minecraft", {
                 settings,
             });
 
-            addLog("OK", "Minecraft запускается");
+            addLog("OK", launchResult || "Minecraft запускается");
 
             if (settings.closeLauncherAfterStart) {
                 setTimeout(async () => {
@@ -318,6 +438,7 @@ function App() {
             }
         } catch (error) {
             console.error(error);
+            setProgressError(error);
             addLog("ERR", "Ошибка при запуске Minecraft");
             addLog("ERR", String(error));
         } finally {
@@ -325,17 +446,103 @@ function App() {
 
             setTimeout(() => {
                 setIsLaunching(false);
-            }, 1500);
+            }, 900);
+        }
+    }
+
+    async function openGameFolder() {
+        try {
+            await invoke("open_game_folder");
+            addLog("OK", "Открыта папка игры");
+        } catch (error) {
+            console.error(error);
+            addLog("ERR", `Не удалось открыть папку игры: ${String(error)}`);
+            setProgressError(error);
+        }
+    }
+
+    async function openLogsFolder() {
+        try {
+            await invoke("open_logs_folder");
+            addLog("OK", "Открыта папка логов");
+        } catch (error) {
+            console.error(error);
+            addLog("ERR", `Не удалось открыть папку логов: ${String(error)}`);
+            setProgressError(error);
+        }
+    }
+
+    async function repairInstance() {
+        try {
+            resetLaunchProgress("Ремонт сборки");
+            setIsRepairing(true);
+            setIsUpdating(true);
+
+            addLog("INFO", "Запущен ремонт сборки");
+            addLog("INFO", "Очистка и повторная синхронизация файлов");
+
+            const result = await invoke<string>("repair_instance");
+
+            addLog("OK", "Сборка починена");
+
+            if (result.trim()) {
+                logBackendSummary(result, 10);
+            }
+        } catch (error) {
+            console.error(error);
+            setProgressError(error);
+            addLog("ERR", "Ремонт сборки завершился ошибкой");
+            addLog("ERR", String(error));
+        } finally {
+            setIsUpdating(false);
+            setIsRepairing(false);
         }
     }
 
     async function minimizeWindow() {
-        await getCurrentWindow().minimize();
+        try {
+            await getCurrentWindow().minimize();
+        } catch (error) {
+            console.error("Не удалось свернуть окно:", error);
+            addLog("ERR", `Не удалось свернуть окно: ${String(error)}`);
+            setProgressError(error);
+        }
     }
 
     async function closeWindow() {
-        await getCurrentWindow().close();
+        try {
+            await getCurrentWindow().close();
+        } catch (error) {
+            console.error("Не удалось закрыть окно:", error);
+            addLog("ERR", `Не удалось закрыть окно: ${String(error)}`);
+            setProgressError(error);
+        }
     }
+
+    useEffect(() => {
+        let unlistenProgress: (() => void) | null = null;
+        let mounted = true;
+
+        listen<LaunchProgressEvent>("launch-progress", (event) => {
+            applyProgressEvent(event.payload);
+        })
+            .then((unlisten) => {
+                if (mounted) {
+                    unlistenProgress = unlisten;
+                } else {
+                    unlisten();
+                }
+            })
+            .catch((error) => {
+                console.error("Не удалось подписаться на launch-progress:", error);
+                addLog("ERR", `Не удалось включить прогресс запуска: ${String(error)}`);
+            });
+
+        return () => {
+            mounted = false;
+            unlistenProgress?.();
+        };
+    }, []);
 
     useEffect(() => {
         prepareRuntime();
@@ -363,10 +570,10 @@ function App() {
 
     const serverStateLabel =
         serverState === "online"
-            ? "СЕРВЕР АКТИВЕН"
+            ? "Онлайн"
             : serverState === "sleeping"
-                ? "СЕРВЕР СПИТ"
-                : "СЕРВЕР НЕДОСТУПЕН";
+                ? "Спит"
+                : "Недоступен";
 
     const serverPlayers =
         serverStatus && serverStatus.maxPlayers > 0
@@ -383,18 +590,52 @@ function App() {
             ? serverStatus.version
             : launcherContent.server.version;
 
+    const isBusy = isLaunching || isUpdating || isRepairing;
+    const showMiniProgress = isBusy;
+
+    const activeStep =
+        launchSteps.find((step) => step.id === launchProgress.currentStep)?.label ??
+        "Выполняется";
+
+    const playButtonTitle = isRepairing
+        ? "Ремонт"
+        : isLaunching
+            ? "Запуск"
+            : "Играть";
+
+    const playButtonSubtitle =
+        isBusy && launchProgress.message
+            ? launchProgress.message
+            : "Forge 1.19.2 · McDonalds Dnepr";
+
+    const latestErrorLogs = logs.slice(-7);
+
     return (
         <main className="app">
-            <div className="window-bar" data-tauri-drag-region>
-                <div className="window-title" data-tauri-drag-region>
-                    SECTOR 27 Launcher
+            <div className="window-bar">
+                <div className="window-drag" data-tauri-drag-region>
+                    <span>SECTOR 27 Launcher</span>
                 </div>
 
                 <div className="window-actions">
-                    <button className="window-btn" onClick={minimizeWindow} title="Свернуть">
+                    <button
+                        className="window-btn"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            void minimizeWindow();
+                        }}
+                        title="Свернуть"
+                    >
                         —
                     </button>
-                    <button className="window-btn close" onClick={closeWindow} title="Закрыть">
+                    <button
+                        className="window-btn close"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            void closeWindow();
+                        }}
+                        title="Закрыть"
+                    >
                         ×
                     </button>
                 </div>
@@ -406,7 +647,7 @@ function App() {
                         <div className="brand-mark">S27</div>
                         <div>
                             <div className="brand-title">SECTOR 27</div>
-                            <div className="brand-subtitle">Private Launcher</div>
+                            <div className="brand-subtitle">McDonalds Dnepr</div>
                         </div>
                     </div>
 
@@ -415,39 +656,39 @@ function App() {
                             className={`nav-item ${activeSection === "home" ? "active" : ""}`}
                             onClick={() => scrollToSection("home", homeRef)}
                         >
-                            <span>01</span>
+                            <span>🌐</span>
                             Главная
                         </button>
 
                         <button
-                            className={`nav-item ${activeSection === "news" ? "active" : ""}`}
-                            onClick={() => scrollToSection("news", newsRef)}
-                        >
-                            <span>02</span>
-                            Новости
-                        </button>
-
-                        <button
                             className={`nav-item ${activeSection === "builds" ? "active" : ""}`}
-                            onClick={() => scrollToSection("builds", buildsRef)}
+                            onClick={() => scrollToSection("builds", aboutRef)}
                         >
-                            <span>03</span>
-                            Сборки
+                            <span>📦</span>
+                            Сборка
                         </button>
 
                         <button
                             className={`nav-item ${activeSection === "settings" ? "active" : ""}`}
                             onClick={() => scrollToSection("settings", settingsRef)}
                         >
-                            <span>04</span>
+                            <span>⚙️</span>
                             Настройки
+                        </button>
+
+                        <button
+                            className={`nav-item ${activeSection === "news" ? "active" : ""}`}
+                            onClick={() => scrollToSection("news", newsRef)}
+                        >
+                            <span>📰</span>
+                            Новости
                         </button>
                     </nav>
 
-                    <div className="sidebar-build">
-                        <div className="sidebar-build-label">Текущая сборка</div>
-                        <div className="sidebar-build-name">McDonalds Dnepr</div>
-                        <div className="sidebar-build-meta">Forge 1.19.2 · RPG Pack</div>
+                    <div className="sidebar-pack">
+                        <span>Активная сборка</span>
+                        <strong>McDonalds Dnepr</strong>
+                        <p>Forge 1.19.2 · 43.4.12</p>
                     </div>
 
                     <div className="profile-card">
@@ -463,243 +704,235 @@ function App() {
 
                 <section className="content">
                     <div className="scroll-area">
-                        <section className="hero" ref={homeRef}>
-                            <div className="hero-content">
-                                <div className="hero-kicker">{launcherContent.build.kicker}</div>
+                        <section className="workspace" ref={homeRef}>
+                            <div className="main-column">
+                                <article className={`server-board ${serverState}`}>
+                                    <div className="server-board-top">
+                                        <div>
+                                            <div className="eyebrow">🌐 Статус сервера</div>
+                                            <h1>{serverStateLabel}</h1>
+                                        </div>
 
-                                <h1>
-                                    {launcherContent.build.titleLine1}
-                                    <span>{launcherContent.build.titleLine2}</span>
-                                </h1>
-
-                                <p>{launcherContent.build.slogan}</p>
-
-                                <div className="hero-tags">
-                                    {launcherContent.build.tags.map((tag) => (
-                                        <span key={tag}>{tag}</span>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="status-card">
-                                <div className={`status-top ${serverState}`}>
-                                    <span className={`pulse ${serverState}`}></span>
-                                    {serverStateLabel}
-                                </div>
-
-                                <div className="status-grid">
-                                    <div>
-                                        <span>Онлайн</span>
-                                        <strong>{serverPlayers}</strong>
+                                        <div className={`status-dot ${serverState}`}></div>
                                     </div>
 
-                                    <div>
-                                        <span>Пинг</span>
-                                        <strong>{serverPing}</strong>
+                                    <div className="server-metrics">
+                                        <div>
+                                            <span>Игроки</span>
+                                            <strong>{serverPlayers}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Пинг</span>
+                                            <strong>{serverPing}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Клиент</span>
+                                            <strong>{serverVersion}</strong>
+                                        </div>
                                     </div>
-                                </div>
-
-                                <div className="status-version">
-                                    <span>Версия клиента</span>
-                                    <strong>{serverVersion}</strong>
-                                </div>
-                            </div>
-                        </section>
-
-                        <section className="quick-actions play-only">
-                            <button
-                                className="play-button"
-                                onClick={launchMinecraft}
-                                disabled={isLaunching || isUpdating}
-                            >
-                                <span>{isLaunching ? "Запуск" : "Играть"}</span>
-                                <small>Проверка файлов и запуск клиента</small>
-                            </button>
-                        </section>
-
-                        <section className="build-section" ref={buildsRef}>
-                            <div className="section-heading">
-                                <div>
-                                    <h2>О сборке</h2>
-                                    <p>Основные особенности клиента McDonalds Dnepr</p>
-                                </div>
-                            </div>
-
-                            <div className="build-grid">
-                                <article className="build-card accent">
-                                    <div className="build-card-label">Версия</div>
-                                    <h3>Forge 1.19.2</h3>
-                                    <p>Стабильная база сборки с поддержкой модов, колоний и технического прогресса.</p>
                                 </article>
 
-                                <article className="build-card">
-                                    <div className="build-card-label">Геймплей</div>
-                                    <h3>RPG + Колонии</h3>
-                                    <p>Развитие персонажа, поселения, профессии жителей и постепенный рост базы.</p>
-                                </article>
+                                <article className="about-wide" ref={aboutRef}>
+                                    <div className="eyebrow">📦 О сборке</div>
+                                    <div className="about-content">
+                                        <div>
+                                            <h2>
+                                                {launcherContent.build.titleLine1}{" "}
+                                                <span>{launcherContent.build.titleLine2}</span>
+                                            </h2>
+                                            <p>{launcherContent.build.slogan}</p>
+                                        </div>
 
-                                <article className="build-card">
-                                    <div className="build-card-label">Технологии</div>
-                                    <h3>Create</h3>
-                                    <p>Механизмы, автоматизация, производство ресурсов и инженерные системы.</p>
-                                </article>
-
-                                <article className="build-card">
-                                    <div className="build-card-label">Атмосфера</div>
-                                    <h3>Community</h3>
-                                    <p>Спокойная кооперативная игра, общие проекты и дружеское развитие сервера.</p>
-                                </article>
-                            </div>
-                        </section>
-
-                        <section className="dashboard" ref={settingsRef}>
-                            <div className="panel player-panel">
-                                <div className="panel-header">
-                                    <div>
-                                        <h2>Профиль игрока</h2>
-                                        <p>Ник, Java и поведение лаунчера</p>
+                                        <div className="about-tags">
+                                            <span>🏘 MineColonies</span>
+                                            <span>🧪 Create</span>
+                                            <span>⚔️ RPG Progression</span>
+                                            <span>🤝 Community</span>
+                                        </div>
                                     </div>
-                                </div>
+                                </article>
 
-                                <label className="field">
-                                    <span>Ник игрока</span>
-                                    <input
-                                        value={settings.username}
-                                        onChange={(event) =>
-                                            updateSettings("username", event.target.value)
-                                        }
-                                        placeholder="Введите ник"
-                                    />
-                                </label>
+                                <section className="news-section" ref={newsRef}>
+                                    <div className="section-title">
+                                        <div>
+                                            <span>📰 Новости</span>
+                                            <h2>Последнее по проекту</h2>
+                                        </div>
+                                    </div>
 
-                                <label className="field">
-                                    <span>Java</span>
-                                    <input
-                                        value={settings.javaPath}
-                                        onChange={(event) =>
-                                            updateSettings("javaPath", event.target.value)
-                                        }
-                                        placeholder="java"
-                                    />
-                                </label>
-
-                                <label className="switch-field">
-                                    <input
-                                        type="checkbox"
-                                        checked={settings.closeLauncherAfterStart}
-                                        onChange={(event) =>
-                                            updateSettings(
-                                                "closeLauncherAfterStart",
-                                                event.target.checked
-                                            )
-                                        }
-                                    />
-                                    <span className="switch-ui"></span>
-                                    <span className="switch-text">
-                                        Закрывать лаунчер после запуска игры
-                                    </span>
-                                </label>
+                                    <div className="news-grid">
+                                        {launcherContent.news.map((item, index) => (
+                                            <article className="news-card" key={index}>
+                                                <span>{item.tag}</span>
+                                                <h3>{item.title}</h3>
+                                                <p>{item.text}</p>
+                                                <small>{item.date}</small>
+                                            </article>
+                                        ))}
+                                    </div>
+                                </section>
                             </div>
 
-                            <div className="panel memory-panel">
-                                <div className="panel-header">
-                                    <div>
-                                        <h2>Память клиента</h2>
-                                        <p>Рекомендуемый режим для сборки: 4–6 GB</p>
+                            <aside className="right-column">
+                                <article className="play-panel">
+                                    <div className="play-panel-head">
+                                        <span>🚀 Запуск</span>
+                                        <strong>{settings.username || "Player"}</strong>
                                     </div>
-                                </div>
 
-                                <div className="memory-current">
-                                    <span>Выбрано</span>
-                                    <strong>
-                                        {settings.ramMin} — {settings.ramMax}
-                                    </strong>
-                                </div>
+                                    <button
+                                        className="play-button"
+                                        onClick={launchMinecraft}
+                                        disabled={isBusy}
+                                    >
+                                        <span>{playButtonTitle}</span>
+                                        <small>{playButtonSubtitle}</small>
+                                    </button>
 
-                                <div className="memory-fields">
+                                    {showMiniProgress && (
+                                        <div className="mini-progress">
+                                            <div className="mini-progress-top">
+                                                <span>{activeStep}</span>
+                                                <strong>{launchProgress.percent}%</strong>
+                                            </div>
+                                            <div className="mini-progress-line">
+                                                <div
+                                                    style={{
+                                                        width: `${launchProgress.percent}%`,
+                                                    }}
+                                                ></div>
+                                            </div>
+                                            <p>{launchProgress.message}</p>
+                                        </div>
+                                    )}
+
+                                    <div className="tool-buttons">
+                                        <button onClick={openGameFolder} disabled={isBusy}>
+                                            <span>📁</span>
+                                            Папка игры
+                                        </button>
+                                        <button onClick={openLogsFolder} disabled={isBusy}>
+                                            <span>📝</span>
+                                            Логи
+                                        </button>
+                                        <button onClick={repairInstance} disabled={isBusy}>
+                                            <span>🛠</span>
+                                            Починить
+                                        </button>
+                                    </div>
+                                </article>
+
+                                <article className="settings-panel" ref={settingsRef}>
+                                    <div className="section-title compact">
+                                        <div>
+                                            <span>⚙️ Настройки</span>
+                                            <h2>Профиль</h2>
+                                        </div>
+                                    </div>
+
                                     <label className="field">
-                                        <span>Минимум RAM</span>
-                                        <select
-                                            value={settings.ramMin}
+                                        <span>Ник игрока</span>
+                                        <input
+                                            value={settings.username}
                                             onChange={(event) =>
-                                                updateSettings("ramMin", event.target.value)
+                                                updateSettings("username", event.target.value)
                                             }
-                                        >
-                                            <option value="1G">1 GB</option>
-                                            <option value="2G">2 GB</option>
-                                            <option value="3G">3 GB</option>
-                                            <option value="4G">4 GB</option>
-                                        </select>
+                                            placeholder="Введите ник"
+                                        />
                                     </label>
 
                                     <label className="field">
-                                        <span>Максимум RAM</span>
-                                        <select
-                                            value={settings.ramMax}
+                                        <span>Java</span>
+                                        <input
+                                            value={settings.javaPath}
                                             onChange={(event) =>
-                                                updateSettings("ramMax", event.target.value)
+                                                updateSettings("javaPath", event.target.value)
                                             }
-                                        >
-                                            <option value="2G">2 GB</option>
-                                            <option value="3G">3 GB</option>
-                                            <option value="4G">4 GB</option>
-                                            <option value="5G">5 GB</option>
-                                            <option value="6G">6 GB</option>
-                                            <option value="8G">8 GB</option>
-                                            <option value="10G">10 GB</option>
-                                            <option value="12G">12 GB</option>
-                                        </select>
+                                            placeholder="java"
+                                        />
                                     </label>
-                                </div>
 
-                                <div className="memory-bar">
-                                    <div className="memory-fill"></div>
-                                </div>
-                            </div>
-                        </section>
+                                    <div className="ram-grid">
+                                        <label className="field">
+                                            <span>Min RAM</span>
+                                            <select
+                                                value={settings.ramMin}
+                                                onChange={(event) =>
+                                                    updateSettings("ramMin", event.target.value)
+                                                }
+                                            >
+                                                <option value="1G">1 GB</option>
+                                                <option value="2G">2 GB</option>
+                                                <option value="3G">3 GB</option>
+                                                <option value="4G">4 GB</option>
+                                            </select>
+                                        </label>
 
-                        <section className="news-section" ref={newsRef}>
-                            <div className="section-heading">
-                                <div>
-                                    <h2>Новости проекта</h2>
-                                    <p>Актуальная информация по сборке и серверу</p>
-                                </div>
-                            </div>
-
-                            <div className="news-grid">
-                                {launcherContent.news.map((item, index) => (
-                                    <article className="news-card" key={index}>
-                                        <div className="news-tag">{item.tag}</div>
-                                        <h3>{item.title}</h3>
-                                        <p>{item.text}</p>
-                                        <span>{item.date}</span>
-                                    </article>
-                                ))}
-                            </div>
-                        </section>
-
-                        <section className="log-panel">
-                            <div className="log-header">
-                                <div>
-                                    <span>Лог лаунчера</span>
-                                    <small>События запуска и настроек</small>
-                                </div>
-
-                                <button onClick={() => setLogs([])}>Очистить</button>
-                            </div>
-
-                            <div className="log-list" ref={logsRef}>
-                                {logs.map((log, index) => (
-                                    <div className={`log-line ${log.type.toLowerCase()}`} key={index}>
-                                        <span>{log.type}</span>
-                                        <p>{log.text}</p>
+                                        <label className="field">
+                                            <span>Max RAM</span>
+                                            <select
+                                                value={settings.ramMax}
+                                                onChange={(event) =>
+                                                    updateSettings("ramMax", event.target.value)
+                                                }
+                                            >
+                                                <option value="2G">2 GB</option>
+                                                <option value="3G">3 GB</option>
+                                                <option value="4G">4 GB</option>
+                                                <option value="5G">5 GB</option>
+                                                <option value="6G">6 GB</option>
+                                                <option value="8G">8 GB</option>
+                                                <option value="10G">10 GB</option>
+                                                <option value="12G">12 GB</option>
+                                            </select>
+                                        </label>
                                     </div>
-                                ))}
-                            </div>
+
+                                    <label className="switch-field">
+                                        <input
+                                            type="checkbox"
+                                            checked={settings.closeLauncherAfterStart}
+                                            onChange={(event) =>
+                                                updateSettings(
+                                                    "closeLauncherAfterStart",
+                                                    event.target.checked
+                                                )
+                                            }
+                                        />
+                                        <span className="switch-ui"></span>
+                                        <span className="switch-text">
+                                            Закрывать после запуска
+                                        </span>
+                                    </label>
+                                </article>
+                            </aside>
                         </section>
                     </div>
                 </section>
             </div>
+
+            {launchError && (
+                <section className="error-console">
+                    <div className="error-console-head">
+                        <div>
+                            <span>⚠️ Ошибка</span>
+                            <strong>Последние события</strong>
+                        </div>
+                        <button onClick={() => setLaunchError(null)}>×</button>
+                    </div>
+
+                    <p className="error-text">{launchError}</p>
+
+                    <div className="error-log" ref={logsRef}>
+                        {latestErrorLogs.map((log, index) => (
+                            <div className={`error-log-line ${log.type.toLowerCase()}`} key={index}>
+                                <span>{log.type}</span>
+                                <p>{log.text}</p>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+            )}
         </main>
     );
 }
