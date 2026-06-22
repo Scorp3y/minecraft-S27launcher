@@ -1,0 +1,20 @@
+﻿{
+  "id": "mcdonaldsdnepr",
+  "name": "McDonalds Dnepr",
+  "version": "1.0.0",
+  "minecraftVersion": "1.19.2",
+  "loader": "forge",
+  "loaderVersion": "43.4.12",
+  "serverIp": "yarik_anime_studio.exaroton.me:46919",
+  "pack": {
+    "type": "zip",
+    "url": "https://drive.google.com/uc?export=download&id=14660I9OElq8Bm6E0YHq9X-KzCnMvVIKF",
+    "sha256": "0f20c62b3d9de0a2d3411c7ee07b956f7245152ffd1b6c580a4ba75a5862be5e",
+    "size": 13243625
+  },
+  "clean": [
+    "mods",
+    "config",
+    "resourcepacks"
+  ]
+}

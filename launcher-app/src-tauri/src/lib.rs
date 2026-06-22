@@ -2,14 +2,16 @@
 use tauri::Emitter;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
-use std::io::{Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROFILE_ID: &str = "mcdonaldsdnepr";
+const REMOTE_MANIFEST_URL: &str =
+    "https://drive.google.com/uc?export=download&id=1JYXV9i10CxFTeS0wpXxCefVvW-wpaxJe";
 
 const SERVER_NAME: &str = "SECTOR 27 | McDonalds Dnepr";
 const SERVER_HOST: &str = "yarik_anime_studio.exaroton.me";
@@ -131,6 +133,17 @@ struct ManifestFile {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ManifestPack {
+    #[serde(rename = "type")]
+    pack_type: String,
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Manifest {
     id: String,
     name: String,
@@ -138,6 +151,9 @@ struct Manifest {
     minecraft_version: String,
     loader: String,
     loader_version: String,
+
+    #[serde(default)]
+    pack: Option<ManifestPack>,
 
     #[serde(default)]
     files: Vec<ManifestFile>,
@@ -399,6 +415,454 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn download_file_with_progress(
+    url: &str,
+    target_path: &Path,
+    expected_size: u64,
+    app: Option<&tauri::AppHandle>,
+    step: &str,
+    label: &str,
+    message: &str,
+    percent_from: u8,
+    percent_to: u8,
+) -> Result<(), String> {
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Не удалось создать папку {}: {error}", parent.display()))?;
+    }
+
+    emit_progress(
+        app,
+        step,
+        label,
+        message,
+        percent_from,
+        "active",
+    );
+
+    let response = ureq::get(url)
+        .set("User-Agent", "SECTOR27-Launcher/1.0")
+        .call()
+        .map_err(|error| format!("Не удалось скачать файл:\n{url}\nОшибка: {error}"))?;
+
+    let mut reader = response.into_reader();
+    let mut output = File::create(target_path)
+        .map_err(|error| format!("Не удалось создать файл {}: {error}", target_path.display()))?;
+
+    let mut downloaded = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let bytes_read = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("Ошибка чтения загрузки: {error}"))?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        output
+            .write_all(&buffer[..bytes_read])
+            .map_err(|error| format!("Ошибка записи файла {}: {error}", target_path.display()))?;
+
+        downloaded += bytes_read as u64;
+
+        if expected_size > 0 && percent_to > percent_from {
+            let progress_range = percent_to - percent_from;
+            let local_percent = ((downloaded as f64 / expected_size as f64)
+                * progress_range as f64)
+                .round() as u8;
+
+            let percent = percent_from
+                .saturating_add(local_percent)
+                .min(percent_to);
+
+            emit_progress(
+                app,
+                step,
+                label,
+                &format!("Скачано {} / {} байт", downloaded, expected_size),
+                percent,
+                "active",
+            );
+        }
+    }
+
+    emit_progress(
+        app,
+        step,
+        label,
+        "Загрузка завершена",
+        percent_to,
+        "done",
+    );
+
+    Ok(())
+}
+
+fn download_json_from_url<T>(
+    url: &str,
+    cache_path: &Path,
+    app: Option<&tauri::AppHandle>,
+) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    download_file_with_progress(
+        url,
+        cache_path,
+        0,
+        app,
+        "manifest",
+        "Проверка manifest",
+        "Скачивание remote manifest",
+        12,
+        18,
+    )?;
+
+    read_json_file(cache_path)
+}
+
+fn extract_zip_to_dir(
+    zip_path: &Path,
+    destination_dir: &Path,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    if destination_dir.exists() {
+        fs::remove_dir_all(destination_dir)
+            .map_err(|error| format!("Не удалось очистить temp {}: {error}", destination_dir.display()))?;
+    }
+
+    fs::create_dir_all(destination_dir)
+        .map_err(|error| format!("Не удалось создать temp {}: {error}", destination_dir.display()))?;
+
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Распаковка сборки",
+        "Открытие zip-архива",
+        58,
+        "active",
+    );
+
+    let zip_file = File::open(zip_path)
+        .map_err(|error| format!("Не удалось открыть zip {}: {error}", zip_path.display()))?;
+
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .map_err(|error| format!("Не удалось прочитать zip {}: {error}", zip_path.display()))?;
+
+    let total = archive.len().max(1);
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Ошибка чтения файла в zip #{index}: {error}"))?;
+
+        let Some(enclosed_name) = entry.enclosed_name().map(|path| path.to_owned()) else {
+            continue;
+        };
+
+        let output_path = destination_dir.join(enclosed_name);
+
+        let percent = 58 + (((index + 1) as f32 / total as f32) * 12.0).round() as u8;
+
+        emit_progress(
+            app,
+            "resourcepacks",
+            "Распаковка сборки",
+            &format!("{}/{} · {}", index + 1, total, entry.name()),
+            percent.min(70),
+            "active",
+        );
+
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path)
+                .map_err(|error| format!("Не удалось создать папку {}: {error}", output_path.display()))?;
+        } else {
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Не удалось создать папку {}: {error}", parent.display()))?;
+            }
+
+            let mut output_file = File::create(&output_path)
+                .map_err(|error| format!("Не удалось создать файл {}: {error}", output_path.display()))?;
+
+            io::copy(&mut entry, &mut output_file)
+                .map_err(|error| format!("Не удалось распаковать {}: {error}", output_path.display()))?;
+        }
+    }
+
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Распаковка сборки",
+        "Zip распакован",
+        70,
+        "done",
+    );
+
+    Ok(())
+}
+
+fn clean_dirs_from_manifest(manifest: &Manifest) -> Vec<String> {
+    if manifest.clean.is_empty() {
+        return vec![
+            "mods".to_string(),
+            "config".to_string(),
+            "resourcepacks".to_string(),
+        ];
+    }
+
+    manifest.clean.clone()
+}
+
+fn resolve_extracted_pack_root(extracted_dir: &Path) -> Result<PathBuf, String> {
+    if extracted_dir.join("mods").exists()
+        || extracted_dir.join("config").exists()
+        || extracted_dir.join("resourcepacks").exists()
+    {
+        return Ok(extracted_dir.to_path_buf());
+    }
+
+    for entry in fs::read_dir(extracted_dir)
+        .map_err(|error| format!("Не удалось прочитать temp {}: {error}", extracted_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Ошибка чтения temp: {error}"))?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        if path.join("mods").exists()
+            || path.join("config").exists()
+            || path.join("resourcepacks").exists()
+        {
+            return Ok(path);
+        }
+    }
+
+    Ok(extracted_dir.to_path_buf())
+}
+
+fn sync_extracted_pack_to_instance(
+    extracted_dir: &Path,
+    instance_dir: &Path,
+    manifest: &Manifest,
+    logs: &mut Vec<String>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<u32, String> {
+    let pack_root = resolve_extracted_pack_root(extracted_dir)?;
+
+    logs.push(format!("Папка распакованной сборки: {}", pack_root.display()));
+
+    let clean_dirs = clean_dirs_from_manifest(manifest);
+    let mut synced = 0u32;
+
+    for dir_name in clean_dirs {
+        let stage = manifest_stage(&format!("{dir_name}/"));
+        let label = stage_label(stage);
+
+        emit_progress(
+            app,
+            stage,
+            label,
+            &format!("Синхронизация {dir_name}"),
+            72,
+            "active",
+        );
+
+        let source_dir = pack_root.join(&dir_name);
+        let target_dir = safe_join(instance_dir, &dir_name)?;
+
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir)
+                .map_err(|error| format!("Не удалось очистить {}: {error}", target_dir.display()))?;
+        }
+
+        if source_dir.exists() {
+            copy_dir_recursive(&source_dir, &target_dir)?;
+            logs.push(format!("Синхронизирована папка: {dir_name}"));
+            synced += 1;
+        } else {
+            fs::create_dir_all(&target_dir)
+                .map_err(|error| format!("Не удалось создать {}: {error}", target_dir.display()))?;
+            logs.push(format!("Папка отсутствует в архиве, создана пустая: {dir_name}"));
+        }
+    }
+
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Синхронизация сборки",
+        "Файлы сборки обновлены",
+        76,
+        "done",
+    );
+
+    Ok(synced)
+}
+
+fn extract_query_param(url: &str, key: &str) -> Option<String> {
+    let query = url.split('?').nth(1)?;
+
+    for part in query.split('&') {
+        let mut pieces = part.splitn(2, '=');
+        let name = pieces.next()?;
+        let value = pieces.next().unwrap_or("");
+
+        if name == key && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    None
+}
+
+fn extract_google_drive_file_id(url: &str) -> Option<String> {
+    if let Some(id) = extract_query_param(url, "id") {
+        return Some(id);
+    }
+
+    let marker = "/file/d/";
+    let after_marker = url.split(marker).nth(1)?;
+    let id = after_marker.split('/').next()?.trim();
+
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+fn normalize_download_url(url: &str) -> String {
+    if url.contains("drive.google.com") || url.contains("drive.usercontent.google.com") {
+        if let Some(file_id) = extract_google_drive_file_id(url) {
+            return format!(
+                "https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+            );
+        }
+    }
+
+    url.to_string()
+}
+
+fn update_by_zip_manifest(
+    manifest: &Manifest,
+    pack: &ManifestPack,
+    logs: &mut Vec<String>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    if pack.pack_type.to_lowercase() != "zip" {
+        return Err(format!("Неподдерживаемый тип pack: {}", pack.pack_type));
+    }
+
+    let instance_dir = app_instance_dir(&manifest.id)?;
+
+    fs::create_dir_all(&instance_dir)
+        .map_err(|error| format!("Не удалось создать instance {}: {error}", instance_dir.display()))?;
+
+    logs.push(format!("Remote updater: {}", manifest.name));
+    logs.push(format!("Версия сборки: {}", manifest.version));
+    logs.push(format!("Manifest URL: {REMOTE_MANIFEST_URL}"));
+    logs.push(format!("Pack URL: {}", pack.url));
+    logs.push(format!("Pack size: {}", pack.size));
+    logs.push(format!("Pack sha256: {}", pack.sha256));
+    logs.push(format!("Папка игрока: {}", instance_dir.display()));
+
+    let safe_version = manifest
+        .version
+        .replace('/', "_")
+        .replace('\\', "_")
+        .replace(':', "_");
+
+let zip_path = downloads_cache_dir()?.join(format!("{}-{safe_version}.zip", manifest.id));
+
+let pack_download_url = normalize_download_url(&pack.url);
+
+logs.push(format!("Resolved pack URL: {pack_download_url}"));
+
+download_file_with_progress(
+    &pack_download_url,
+    &zip_path,
+    pack.size,
+    app,
+    "manifest",
+    "Скачивание сборки",
+    "Загрузка pack.zip из Google Drive",
+    20,
+    52,
+)?;
+
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка sha256",
+        "Проверка целостности zip",
+        54,
+        "active",
+    );
+
+    let actual_hash = sha256_file(&zip_path)?;
+
+    if actual_hash.to_lowercase() != pack.sha256.to_lowercase() {
+        let _ = fs::remove_file(&zip_path);
+
+        return Err(format!(
+            "SHA256 zip не совпал.\nОжидалось: {}\nПолучено: {}\nВозможно Google Drive вернул HTML-страницу вместо файла или файл был изменён.",
+            pack.sha256,
+            actual_hash
+        ));
+    }
+
+    logs.push("SHA256 zip совпал".to_string());
+
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка sha256",
+        "Zip проверен",
+        56,
+        "done",
+    );
+
+    let extracted_dir = temp_dir()?.join(format!("{}-{safe_version}", manifest.id));
+
+    extract_zip_to_dir(&zip_path, &extracted_dir, app)?;
+
+    let synced = sync_extracted_pack_to_instance(
+        &extracted_dir,
+        &instance_dir,
+        manifest,
+        logs,
+        app,
+    )?;
+
+    let mut deleted = 0u32;
+
+    for file_to_delete in &manifest.delete {
+        if delete_file_from_instance(&instance_dir, file_to_delete)? {
+            deleted += 1;
+            logs.push(format!("Удалён: {file_to_delete}"));
+        }
+    }
+
+    logs.push("Remote update готов.".to_string());
+    logs.push(format!("Синхронизировано папок: {synced}"));
+    logs.push(format!("Удалено файлов: {deleted}"));
+
+    emit_progress(
+        app,
+        "resourcepacks",
+        "Проверка файлов завершена",
+        &format!("Синхронизировано папок: {synced}"),
+        78,
+        "done",
+    );
+
+    Ok(())
+}
+
 fn clean_pack_dirs(instance_dir: &Path) -> Result<(), String> {
     let pack_dirs = ["mods", "config", "resourcepacks"];
 
@@ -437,11 +901,10 @@ fn sync_instance_to_appdata(profile_id: &str, clean_pack_folders: bool) -> Resul
 fn ensure_instance_exists_in_appdata(profile_id: &str) -> Result<PathBuf, String> {
     let destination = app_instance_dir(profile_id)?;
 
-    if destination.exists() {
-        return Ok(destination);
-    }
+    fs::create_dir_all(&destination)
+        .map_err(|error| format!("Не удалось создать instance {}: {error}", destination.display()))?;
 
-    sync_instance_to_appdata(profile_id, false)
+    Ok(destination)
 }
 
 fn library_name_to_path(name: &str) -> Result<PathBuf, String> {
@@ -1328,6 +1791,10 @@ fn update_by_manifest(
     logs: &mut Vec<String>,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
+        if let Some(pack) = manifest.pack.as_ref() {
+        return update_by_zip_manifest(manifest, pack, logs, app);
+    }
+
     let instance_dir = app_instance_dir(&manifest.id)?;
 
     fs::create_dir_all(&instance_dir)
@@ -1442,52 +1909,37 @@ fn update_profile_direct(profile_id: &str, app: Option<&tauri::AppHandle>) -> Re
 
     ensure_instance_exists_in_appdata(profile_id)?;
 
-    logs.push("Читаю profiles.json".to_string());
+    logs.push("Remote updater включён".to_string());
+    logs.push(format!("Manifest URL: {REMOTE_MANIFEST_URL}"));
 
     emit_progress(
         app,
         "manifest",
         "Проверка manifest",
-        "Чтение profiles.json",
+        "Скачивание remote manifest",
         12,
         "active",
     );
 
-    let config = read_profiles_config()?;
+    let manifest_cache_path = manifests_cache_dir()?.join("remote-manifest.json");
 
-    let profile = config
-        .profiles
-        .iter()
-        .find(|profile| profile.id == profile_id)
-        .ok_or_else(|| {
-            let available = config
-                .profiles
-                .iter()
-                .map(|profile| format!("- {}: {}", profile.id, profile.name))
-                .collect::<Vec<String>>()
-                .join("\n");
-
-            format!("Профиль не найден: {profile_id}\nДоступные профили:\n{available}")
-        })?;
-
-    logs.push(format!("Лаунчер: {}", config.launcher_name));
-    logs.push(format!("Выбран профиль: {}", profile.name));
-    logs.push(format!("Описание: {}", profile.description));
-    logs.push(format!("Minecraft: {}", profile.minecraft_version));
-    logs.push(format!("Loader: {} {}", profile.loader, profile.loader_version));
-    logs.push(format!("Server IP: {}", profile.server_ip));
-    logs.push(format!("Manifest: {}", profile.manifest_url));
-
-    emit_progress(
+    let manifest: Manifest = download_json_from_url(
+        REMOTE_MANIFEST_URL,
+        &manifest_cache_path,
         app,
-        "manifest",
-        "Проверка manifest",
-        &format!("Чтение manifest: {}", profile.manifest_url),
-        16,
-        "active",
-    );
+    )?;
 
-    let manifest: Manifest = load_json_from_source(&profile.manifest_url)?;
+    if manifest.id != profile_id {
+        return Err(format!(
+            "Manifest относится к другому профилю.\nОжидалось: {profile_id}\nПолучено: {}",
+            manifest.id
+        ));
+    }
+
+    logs.push(format!("Выбран профиль: {}", manifest.name));
+    logs.push(format!("Версия сборки: {}", manifest.version));
+    logs.push(format!("Minecraft: {}", manifest.minecraft_version));
+    logs.push(format!("Loader: {} {}", manifest.loader, manifest.loader_version));
 
     update_by_manifest(&manifest, &mut logs, app)?;
 
