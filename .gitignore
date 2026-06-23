@@ -51,3 +51,15 @@ tmp/
 packs/**/mods/
 packs/**/resourcepacks/
 packs/**/shaderpacks/
+
+# SECTOR 27 generated artifacts
+/base-build/
+/remote-build/
+/release/
+
+/drive-test*.zip
+/base-drive-test*.zip
+/manifest-check.json
+
+/mcdonaldsdnepr-*.zip
+/mcdonaldsdnepr-base-*.zip

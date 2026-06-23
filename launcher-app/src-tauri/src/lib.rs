@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROFILE_ID: &str = "mcdonaldsdnepr";
 const REMOTE_MANIFEST_URL: &str =
-    "https://drive.google.com/uc?export=download&id=1JYXV9i10CxFTeS0wpXxCefVvW-wpaxJe";
+    "https://drive.google.com/uc?export=download&id=1OT_l-K5mfzYHUtD_J527diDJZr7114zj";
 
 const SERVER_NAME: &str = "SECTOR 27 | McDonalds Dnepr";
 const SERVER_HOST: &str = "yarik_anime_studio.exaroton.me";
@@ -150,7 +150,10 @@ struct Manifest {
     version: String,
     minecraft_version: String,
     loader: String,
-    loader_version: String,
+        loader_version: String,
+
+    #[serde(default)]
+    base: Option<ManifestPack>,
 
     #[serde(default)]
     pack: Option<ManifestPack>,
@@ -415,6 +418,143 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let bytes_f = bytes as f64;
+
+    if bytes_f >= GB {
+        format!("{:.2} ГБ", bytes_f / GB)
+    } else if bytes_f >= MB {
+        format!("{:.1} МБ", bytes_f / MB)
+    } else if bytes_f >= KB {
+        format!("{:.1} КБ", bytes_f / KB)
+    } else {
+        format!("{bytes} Б")
+    }
+}
+
+fn download_file_with_curl(
+    url: &str,
+    target_path: &Path,
+    expected_size: u64,
+    app: Option<&tauri::AppHandle>,
+    step: &str,
+    label: &str,
+    message: &str,
+    percent_from: u8,
+    percent_to: u8,
+) -> Result<(), String> {
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Не удалось создать папку {}: {error}", parent.display()))?;
+    }
+
+    let temp_path = target_path.with_extension("download");
+
+    let _ = fs::remove_file(&temp_path);
+    let _ = fs::remove_file(target_path);
+
+    emit_progress(
+        app,
+        step,
+        label,
+        &format!("{message} · fallback curl.exe"),
+        percent_from,
+        "active",
+    );
+
+    let mut child = Command::new("curl.exe")
+        .arg("-L")
+        .arg("--fail")
+        .arg("--retry")
+        .arg("5")
+        .arg("--retry-delay")
+        .arg("3")
+        .arg(url)
+        .arg("-o")
+        .arg(&temp_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Не удалось запустить curl.exe: {error}"))?;
+
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("Ошибка ожидания curl.exe: {error}"))?
+        {
+            Some(status) => {
+                if !status.success() {
+                    let _ = fs::remove_file(&temp_path);
+
+                    return Err(format!(
+                        "curl.exe не смог скачать файл. Код выхода: {:?}",
+                        status.code()
+                    ));
+                }
+
+                break;
+            }
+            None => {
+                let downloaded_size = fs::metadata(&temp_path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
+
+                let percent = if expected_size > 0 {
+                    let range = percent_to.saturating_sub(percent_from);
+                    percent_from
+                        + (((downloaded_size as f64 / expected_size as f64) * range as f64).round() as u8)
+                } else {
+                    percent_from
+                };
+
+                let progress_message = if expected_size > 0 {
+                    format!(
+                        "Скачано {} / {} · curl.exe",
+                        format_bytes(downloaded_size),
+                        format_bytes(expected_size)
+                    )
+                } else {
+                    format!("Скачано {} · curl.exe", format_bytes(downloaded_size))
+                };
+
+                emit_progress(
+                    app,
+                    step,
+                    label,
+                    &progress_message,
+                    percent.min(percent_to),
+                    "active",
+                );
+
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+            }
+        }
+    }
+
+    let downloaded_size = fs::metadata(&temp_path)
+        .map_err(|error| format!("Не удалось прочитать скачанный файл {}: {error}", temp_path.display()))?
+        .len();
+
+    fs::rename(&temp_path, target_path)
+        .map_err(|error| format!("Не удалось сохранить файл {}: {error}", target_path.display()))?;
+
+    emit_progress(
+        app,
+        step,
+        label,
+        &format!("Скачано {}", format_bytes(downloaded_size)),
+        percent_to,
+        "done",
+    );
+
+    Ok(())
+}
+
 fn download_file_with_progress(
     url: &str,
     target_path: &Path,
@@ -431,6 +571,11 @@ fn download_file_with_progress(
             .map_err(|error| format!("Не удалось создать папку {}: {error}", parent.display()))?;
     }
 
+    let temp_path = target_path.with_extension("download");
+
+    let _ = fs::remove_file(&temp_path);
+    let _ = fs::remove_file(target_path);
+
     emit_progress(
         app,
         step,
@@ -440,59 +585,96 @@ fn download_file_with_progress(
         "active",
     );
 
-    let response = ureq::get(url)
-        .set("User-Agent", "SECTOR27-Launcher/1.0")
-        .call()
-        .map_err(|error| format!("Не удалось скачать файл:\n{url}\nОшибка: {error}"))?;
+    let rust_download_result = (|| -> Result<(), String> {
+        let response = ureq::get(url)
+            .call()
+            .map_err(|error| format!("Ошибка запроса загрузки: {error}"))?;
 
-    let mut reader = response.into_reader();
-    let mut output = File::create(target_path)
-        .map_err(|error| format!("Не удалось создать файл {}: {error}", target_path.display()))?;
+        let mut reader = response.into_reader();
 
-    let mut downloaded = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
+        let mut output = File::create(&temp_path)
+            .map_err(|error| format!("Не удалось создать файл {}: {error}", temp_path.display()))?;
 
-    loop {
-        let bytes_read = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("Ошибка чтения загрузки: {error}"))?;
+        let mut buffer = [0u8; 64 * 1024];
+        let mut downloaded = 0u64;
 
-        if bytes_read == 0 {
-            break;
-        }
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| format!("Ошибка чтения загрузки: {error}"))?;
 
-        output
-            .write_all(&buffer[..bytes_read])
-            .map_err(|error| format!("Ошибка записи файла {}: {error}", target_path.display()))?;
+            if read == 0 {
+                break;
+            }
 
-        downloaded += bytes_read as u64;
+            output
+                .write_all(&buffer[..read])
+                .map_err(|error| format!("Ошибка записи загрузки: {error}"))?;
 
-        if expected_size > 0 && percent_to > percent_from {
-            let progress_range = percent_to - percent_from;
-            let local_percent = ((downloaded as f64 / expected_size as f64)
-                * progress_range as f64)
-                .round() as u8;
+            downloaded += read as u64;
 
-            let percent = percent_from
-                .saturating_add(local_percent)
-                .min(percent_to);
+            let percent = if expected_size > 0 {
+                let range = percent_to.saturating_sub(percent_from);
+                percent_from
+                    + (((downloaded as f64 / expected_size as f64) * range as f64).round() as u8)
+            } else {
+                percent_from
+            };
 
             emit_progress(
                 app,
                 step,
                 label,
-                &format!("Скачано {} / {} байт", downloaded, expected_size),
-                percent,
+                &format!(
+                    "Скачано {} / {}",
+                    format_bytes(downloaded),
+                    format_bytes(expected_size)
+                ),
+                percent.min(percent_to),
                 "active",
             );
         }
+
+        output
+            .flush()
+            .map_err(|error| format!("Ошибка сохранения загрузки: {error}"))?;
+
+        fs::rename(&temp_path, target_path)
+            .map_err(|error| format!("Не удалось сохранить файл {}: {error}", target_path.display()))?;
+
+        Ok(())
+    })();
+
+    if let Err(error) = rust_download_result {
+        let _ = fs::remove_file(&temp_path);
+
+        emit_progress(
+            app,
+            step,
+            label,
+            &format!("Rust-загрузка упала: {error}. Пробую curl.exe"),
+            percent_from,
+            "active",
+        );
+
+    return download_file_with_curl(
+    url,
+    target_path,
+    expected_size,
+    app,
+    step,
+    label,
+    message,
+    percent_from,
+    percent_to,
+        );
     }
 
     emit_progress(
         app,
         step,
         label,
-        "Загрузка завершена",
+        "Скачивание завершено",
         percent_to,
         "done",
     );
@@ -523,10 +705,14 @@ where
     read_json_file(cache_path)
 }
 
-fn extract_zip_to_dir(
+fn extract_zip_to_dir_with_progress(
     zip_path: &Path,
     destination_dir: &Path,
     app: Option<&tauri::AppHandle>,
+    step: &str,
+    label: &str,
+    percent_from: u8,
+    percent_to: u8,
 ) -> Result<(), String> {
     if destination_dir.exists() {
         fs::remove_dir_all(destination_dir)
@@ -538,10 +724,10 @@ fn extract_zip_to_dir(
 
     emit_progress(
         app,
-        "resourcepacks",
-        "Распаковка сборки",
+        step,
+        label,
         "Открытие zip-архива",
-        58,
+        percent_from,
         "active",
     );
 
@@ -564,14 +750,16 @@ fn extract_zip_to_dir(
 
         let output_path = destination_dir.join(enclosed_name);
 
-        let percent = 58 + (((index + 1) as f32 / total as f32) * 12.0).round() as u8;
+        let percent_range = percent_to.saturating_sub(percent_from);
+        let percent = percent_from
+            + (((index + 1) as f32 / total as f32) * percent_range as f32).round() as u8;
 
         emit_progress(
             app,
-            "resourcepacks",
-            "Распаковка сборки",
+            step,
+            label,
             &format!("{}/{} · {}", index + 1, total, entry.name()),
-            percent.min(70),
+            percent.min(percent_to),
             "active",
         );
 
@@ -594,14 +782,30 @@ fn extract_zip_to_dir(
 
     emit_progress(
         app,
-        "resourcepacks",
-        "Распаковка сборки",
+        step,
+        label,
         "Zip распакован",
-        70,
+        percent_to,
         "done",
     );
 
     Ok(())
+}
+
+fn extract_zip_to_dir(
+    zip_path: &Path,
+    destination_dir: &Path,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    extract_zip_to_dir_with_progress(
+        zip_path,
+        destination_dir,
+        app,
+        "resourcepacks",
+        "Распаковка сборки",
+        58,
+        70,
+    )
 }
 
 fn clean_dirs_from_manifest(manifest: &Manifest) -> Vec<String> {
@@ -745,6 +949,240 @@ fn normalize_download_url(url: &str) -> String {
     }
 
     url.to_string()
+}
+
+fn is_base_installed(instance_dir: &Path) -> bool {
+    let version = custom_version();
+
+    let vanilla_json = instance_dir
+        .join("versions")
+        .join(MC_VERSION)
+        .join(format!("{MC_VERSION}.json"));
+
+    let forge_json = instance_dir
+        .join("versions")
+        .join(&version)
+        .join(format!("{version}.json"));
+
+    let forge_jar = instance_dir
+        .join("versions")
+        .join(&version)
+        .join(format!("{version}.jar"));
+
+    let forge_client_lib = instance_dir
+        .join("libraries")
+        .join("net")
+        .join("minecraftforge")
+        .join("forge")
+        .join(format!("{MC_VERSION}-{FORGE_VERSION}"))
+        .join(format!("forge-{MC_VERSION}-{FORGE_VERSION}-client.jar"));
+
+    instance_dir.join("assets").join("indexes").exists()
+        && instance_dir.join("libraries").exists()
+        && vanilla_json.exists()
+        && forge_json.exists()
+        && forge_jar.exists()
+        && forge_client_lib.exists()
+}
+
+fn resolve_extracted_base_root(extracted_dir: &Path) -> Result<PathBuf, String> {
+    if extracted_dir.join("assets").exists()
+        || extracted_dir.join("libraries").exists()
+        || extracted_dir.join("versions").exists()
+    {
+        return Ok(extracted_dir.to_path_buf());
+    }
+
+    for entry in fs::read_dir(extracted_dir)
+        .map_err(|error| format!("Не удалось прочитать temp {}: {error}", extracted_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Ошибка чтения temp: {error}"))?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        if path.join("assets").exists()
+            || path.join("libraries").exists()
+            || path.join("versions").exists()
+        {
+            return Ok(path);
+        }
+    }
+
+    Ok(extracted_dir.to_path_buf())
+}
+
+fn sync_extracted_base_to_instance(
+    extracted_dir: &Path,
+    instance_dir: &Path,
+    logs: &mut Vec<String>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<u32, String> {
+    let base_root = resolve_extracted_base_root(extracted_dir)?;
+
+    logs.push(format!("Папка распакованной базы: {}", base_root.display()));
+
+    let base_dirs = ["assets", "libraries", "versions", "defaultconfigs"];
+    let mut synced = 0u32;
+
+    for dir_name in base_dirs {
+        emit_progress(
+            app,
+            "manifest",
+            "Установка base",
+            &format!("Синхронизация {dir_name}"),
+            55,
+            "active",
+        );
+
+        let source_dir = base_root.join(dir_name);
+        let target_dir = instance_dir.join(dir_name);
+
+        if !source_dir.exists() {
+            logs.push(format!("Base dir отсутствует в архиве: {dir_name}"));
+            continue;
+        }
+
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir)
+                .map_err(|error| format!("Не удалось очистить {}: {error}", target_dir.display()))?;
+        }
+
+        copy_dir_recursive(&source_dir, &target_dir)?;
+        logs.push(format!("Base dir установлен: {dir_name}"));
+        synced += 1;
+    }
+
+    emit_progress(
+        app,
+        "manifest",
+        "Установка base",
+        "Base установлен",
+        60,
+        "done",
+    );
+
+    Ok(synced)
+}
+
+fn update_base_if_needed(
+    manifest: &Manifest,
+    base: &ManifestPack,
+    logs: &mut Vec<String>,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), String> {
+    if base.pack_type.to_lowercase() != "zip" {
+        return Err(format!("Неподдерживаемый тип base: {}", base.pack_type));
+    }
+
+    let instance_dir = app_instance_dir(&manifest.id)?;
+
+    fs::create_dir_all(&instance_dir)
+        .map_err(|error| format!("Не удалось создать instance {}: {error}", instance_dir.display()))?;
+
+    if is_base_installed(&instance_dir) {
+        logs.push("Base уже установлен, скачивание не требуется".to_string());
+
+        emit_progress(
+            app,
+            "manifest",
+            "Проверка base",
+            "Base уже установлен",
+            18,
+            "done",
+        );
+
+        return Ok(());
+    }
+
+    logs.push("Base не найден, требуется установка".to_string());
+    logs.push(format!("Base URL: {}", base.url));
+    logs.push(format!("Base size: {}", base.size));
+    logs.push(format!("Base sha256: {}", base.sha256));
+
+    let safe_version = manifest
+        .version
+        .replace('/', "_")
+        .replace('\\', "_")
+        .replace(':', "_");
+
+    let base_path = downloads_cache_dir()?.join(format!("{}-base-{safe_version}.zip", manifest.id));
+    let base_download_url = normalize_download_url(&base.url);
+
+    logs.push(format!("Resolved base URL: {base_download_url}"));
+
+    download_file_with_progress(
+        &base_download_url,
+        &base_path,
+        base.size,
+        app,
+        "manifest",
+        "Скачивание base",
+        "Загрузка Minecraft/Forge base",
+        18,
+        44,
+    )?;
+
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка base sha256",
+        "Проверка целостности base.zip",
+        46,
+        "active",
+    );
+
+    let actual_hash = sha256_file(&base_path)?;
+
+    if actual_hash.to_lowercase() != base.sha256.to_lowercase() {
+        let _ = fs::remove_file(&base_path);
+
+        return Err(format!(
+            "SHA256 base.zip не совпал.\nОжидалось: {}\nПолучено: {}\nФайл base.zip повреждён или скачался не полностью.",
+            base.sha256,
+            actual_hash
+        ));
+    }
+
+    logs.push("SHA256 base.zip совпал".to_string());
+
+    emit_progress(
+        app,
+        "manifest",
+        "Проверка base sha256",
+        "Base zip проверен",
+        48,
+        "done",
+    );
+
+    let extracted_dir = temp_dir()?.join(format!("{}-base-{safe_version}", manifest.id));
+
+    extract_zip_to_dir_with_progress(
+        &base_path,
+        &extracted_dir,
+        app,
+        "manifest",
+        "Распаковка base",
+        50,
+        54,
+    )?;
+
+    let synced = sync_extracted_base_to_instance(
+        &extracted_dir,
+        &instance_dir,
+        logs,
+        app,
+    )?;
+
+    if !is_base_installed(&instance_dir) {
+        return Err("Base установлен, но проверка Forge/Minecraft файлов не прошла".to_string());
+    }
+
+    logs.push(format!("Base установлен. Синхронизировано папок: {synced}"));
+
+    Ok(())
 }
 
 fn update_by_zip_manifest(
@@ -1791,7 +2229,11 @@ fn update_by_manifest(
     logs: &mut Vec<String>,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
-        if let Some(pack) = manifest.pack.as_ref() {
+    if let Some(base) = manifest.base.as_ref() {
+        update_base_if_needed(manifest, base, logs, app)?;
+    }
+
+    if let Some(pack) = manifest.pack.as_ref() {
         return update_by_zip_manifest(manifest, pack, logs, app);
     }
 
