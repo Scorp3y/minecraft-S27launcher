@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { AuthGate } from "./auth/AuthGate";
+import type { AuthUser } from "./auth/authApi";
 import "./App.css";
 
 type LauncherSettings = {
@@ -104,6 +106,11 @@ type LogItem = {
 
 type NavSection = "home" | "builds" | "settings" | "news";
 
+type LauncherShellProps = {
+    authUser: AuthUser;
+    onLogout: () => void;
+};
+
 const SERVER_ADDRESS = "yarik_anime_studio.exaroton.me:46919";
 
 const defaultSettings: LauncherSettings = {
@@ -194,7 +201,21 @@ function clampPercent(value: number) {
     return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function App() {
+function maskEmail(email: string) {
+    const [name, domain] = email.split("@");
+
+    if (!name || !domain) {
+        return email;
+    }
+
+    if (name.length <= 3) {
+        return `${name.slice(0, 1)}***@${domain}`;
+    }
+
+    return `${name.slice(0, 1)}${"*".repeat(Math.min(8, name.length - 3))}${name.slice(-2)}@${domain}`;
+}
+
+function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
     const [settings, setSettings] = useState<LauncherSettings>(defaultSettings);
     const [launcherContent, setLauncherContent] =
         useState<LauncherContent>(defaultContent);
@@ -325,7 +346,7 @@ function App() {
             const loaded = await invoke<LauncherSettings>("read_settings");
 
             setSettings({
-                username: loaded.username || defaultSettings.username,
+                username: loaded.username || authUser.nickname || defaultSettings.username,
                 ramMin: loaded.ramMin || defaultSettings.ramMin,
                 ramMax: loaded.ramMax || defaultSettings.ramMax,
                 javaPath: loaded.javaPath || defaultSettings.javaPath,
@@ -691,14 +712,21 @@ function App() {
                         <p>Forge 1.19.2 · 43.4.12</p>
                     </div>
 
-                    <div className="profile-card">
-                        <div className="profile-avatar">
-                            {settings.username.slice(0, 1).toUpperCase() || "P"}
+                    <div className="profile-card account-card">
+                        <div className="account-main">
+                            <div className="profile-avatar">
+                                {authUser.nickname.slice(0, 1).toUpperCase() || "S"}
+                            </div>
+
+                            <div className="profile-meta">
+                                <div className="profile-name">{authUser.nickname}</div>
+                                <div className="profile-role">{maskEmail(authUser.email)}</div>
+                            </div>
                         </div>
-                        <div>
-                            <div className="profile-name">{settings.username || "Player"}</div>
-                            <div className="profile-role">Игрок SECTOR 27</div>
-                        </div>
+
+                        <button className="logout-button" onClick={onLogout}>
+                            Выйти
+                        </button>
                     </div>
                 </aside>
 
@@ -934,6 +962,16 @@ function App() {
                 </section>
             )}
         </main>
+    );
+}
+
+function App() {
+    return (
+        <AuthGate>
+            {({ user, logout }) => (
+                <LauncherShell authUser={user} onLogout={logout} />
+            )}
+        </AuthGate>
     );
 }
 
