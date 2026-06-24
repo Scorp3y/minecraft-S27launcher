@@ -63,3 +63,9 @@ packs/**/shaderpacks/
 
 /mcdonaldsdnepr-*.zip
 /mcdonaldsdnepr-base-*.zip
+
+# Backend API
+launcher-api/target/
+launcher-api/.env
+launcher-api/*.env
+!launcher-api/.env.example
