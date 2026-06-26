@@ -1,8 +1,4 @@
-use axum::{
-    http::{header, HeaderValue, Method},
-    routing::get,
-    Json, Router,
-};
+use axum::{routing::get, Json, Router};
 
 use serde::Serialize;
 
@@ -40,23 +36,13 @@ struct DbHealthResponse {
 }
 
 pub fn create_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://localhost:1420"),
-            HeaderValue::from_static("http://127.0.0.1:1420"),
-            HeaderValue::from_static("tauri://localhost"),
-            HeaderValue::from_static("https://tauri.localhost"),
-        ])
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
-
     Router::new()
         .route("/api/health", get(health))
         .route("/api/health/db", get(health_db))
         .merge(auth_routes::routes())
         .merge(user_routes::routes())
         .with_state(state)
-        .layer(cors)
+        .layer(CorsLayer::permissive())
 }
 
 async fn health() -> Json<HealthResponse> {

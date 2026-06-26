@@ -17,6 +17,11 @@ export type AuthResponse = {
     user: AuthUser;
 };
 
+export type MessageResponse = {
+    status: string;
+    message: string;
+};
+
 type ApiErrorResponse = {
     error?: string;
 };
@@ -33,7 +38,11 @@ function translateApiError(message: string): string {
     }
 
     if (normalized.includes("invalid email or password")) {
-        return "Неверный email или пароль.";
+        return "Неверный email, никнейм или пароль.";
+    }
+
+    if (normalized.includes("email not verified")) {
+        return "Почта не подтверждена. Введите код подтверждения из письма.";
     }
 
     if (normalized.includes("password must be 8-128 characters")) {
@@ -64,6 +73,42 @@ function translateApiError(message: string): string {
         return "Некорректный email.";
     }
 
+    if (normalized.includes("invalid verification code")) {
+        return "Неверный код подтверждения.";
+    }
+
+    if (normalized.includes("verification code expired")) {
+        return "Код подтверждения истёк. Отправьте новый код.";
+    }
+
+    if (normalized.includes("verification code attempts exceeded")) {
+        return "Превышено количество попыток. Отправьте новый код.";
+    }
+
+    if (normalized.includes("verification code not found")) {
+        return "Код подтверждения не найден. Отправьте код повторно.";
+    }
+
+    if (normalized.includes("email already verified")) {
+        return "Почта уже подтверждена. Выполните вход.";
+    }
+
+    if (normalized.includes("invalid reset code")) {
+        return "Неверный код восстановления пароля.";
+    }
+
+    if (normalized.includes("reset code expired")) {
+        return "Код восстановления истёк. Запросите новый код.";
+    }
+
+    if (normalized.includes("reset code already used")) {
+        return "Код восстановления уже использован.";
+    }
+
+    if (normalized.includes("failed to send email")) {
+        return "Не удалось отправить письмо. Попробуйте позже.";
+    }
+
     if (normalized.includes("user is not active")) {
         return "Аккаунт не активен.";
     }
@@ -80,10 +125,7 @@ async function readApiError(response: Response): Promise<string> {
     }
 }
 
-async function requestJson<T>(
-    path: string,
-    options: RequestInit
-): Promise<T> {
+async function requestJson<T>(path: string, options: RequestInit): Promise<T> {
     let response: Response;
 
     try {
@@ -105,8 +147,8 @@ export async function registerAccount(input: {
     email: string;
     nickname: string;
     password: string;
-}): Promise<AuthResponse> {
-    return requestJson<AuthResponse>("/auth/register", {
+}): Promise<MessageResponse> {
+    return requestJson<MessageResponse>("/auth/register", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -116,10 +158,64 @@ export async function registerAccount(input: {
 }
 
 export async function loginAccount(input: {
-    email: string;
+    login: string;
     password: string;
 }): Promise<AuthResponse> {
     return requestJson<AuthResponse>("/auth/login", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            email: input.login,
+            password: input.password,
+        }),
+    });
+}
+
+export async function verifyEmail(input: {
+    email: string;
+    code: string;
+}): Promise<AuthResponse> {
+    return requestJson<AuthResponse>("/auth/verify-email", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function resendVerificationCode(input: {
+    email: string;
+}): Promise<MessageResponse> {
+    return requestJson<MessageResponse>("/auth/verify-email/resend", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function requestPasswordReset(input: {
+    email: string;
+}): Promise<MessageResponse> {
+    return requestJson<MessageResponse>("/auth/password-reset/request", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function confirmPasswordReset(input: {
+    email: string;
+    code: string;
+    new_password: string;
+}): Promise<MessageResponse> {
+    return requestJson<MessageResponse>("/auth/password-reset/confirm", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",

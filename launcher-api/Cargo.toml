@@ -27,6 +27,8 @@ hex = "0.4"
 
 jsonwebtoken = "9"
 
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+
 rand = "0.8"
 
 serde = { version = "1", features = ["derive"] }
