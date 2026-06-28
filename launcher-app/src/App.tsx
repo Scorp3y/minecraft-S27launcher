@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AuthGate } from "./auth/AuthGate";
-import type { AuthUser } from "./auth/authApi";
+import { getCurrentUser, type AuthUser } from "./auth/authApi";
 import "./App.css";
 
 type LauncherSettings = {
@@ -104,10 +104,11 @@ type LogItem = {
     text: string;
 };
 
-type NavSection = "home" | "builds" | "settings" | "news";
+type NavSection = "home" | "builds" | "settings" | "profile" | "news";
 
 type LauncherShellProps = {
     authUser: AuthUser;
+    accessToken: string;
     onLogout: () => void;
 };
 
@@ -215,7 +216,106 @@ function maskEmail(email: string) {
     return `${name.slice(0, 1)}${"*".repeat(Math.min(8, name.length - 3))}${name.slice(-2)}@${domain}`;
 }
 
-function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
+function formatAuthDate(value: string | null) {
+    if (!value) {
+        return "—";
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return new Intl.DateTimeFormat("ru-RU", {
+        dateStyle: "medium",
+        timeStyle: "short",
+    }).format(date);
+}
+
+function getAccountRoleView(role: string) {
+    switch (role) {
+        case "admin":
+            return {
+                label: "ADMIN",
+                className: "admin",
+            };
+
+        case "moderator":
+            return {
+                label: "MODERATOR",
+                className: "moderator",
+            };
+
+        case "user":
+            return {
+                label: "USER",
+                className: "user",
+            };
+
+        default:
+            return {
+                label: role.toUpperCase(),
+                className: "unknown",
+            };
+    }
+}
+
+function getAccountStatusView(status: string) {
+    switch (status) {
+        case "active":
+            return {
+                label: "ACTIVE",
+                className: "active",
+                title: "Аккаунт активен",
+                description:
+                    "Профиль полностью доступен. Можно запускать Minecraft и пользоваться лаунчером.",
+            };
+
+        case "pending_email_verification":
+            return {
+                label: "EMAIL REQUIRED",
+                className: "pending",
+                title: "Нужно подтвердить почту",
+                description:
+                    "Почта ещё не подтверждена. Подтверди email, чтобы аккаунт стал полностью активным.",
+            };
+
+        case "banned":
+            return {
+                label: "BANNED",
+                className: "banned",
+                title: "Аккаунт заблокирован",
+                description:
+                    "Доступ к запуску может быть ограничен администрацией проекта.",
+            };
+
+        case "disabled":
+            return {
+                label: "DISABLED",
+                className: "disabled",
+                title: "Аккаунт отключён",
+                description:
+                    "Профиль временно отключён. Обратись к администрации SECTOR 27.",
+            };
+
+        default:
+            return {
+                label: status.toUpperCase(),
+                className: "unknown",
+                title: "Неизвестный статус",
+                description:
+                    "Лаунчер получил нестандартный статус аккаунта. Лучше обновить профиль.",
+            };
+    }
+}
+
+function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) {
+    const [currentUser, setCurrentUser] = useState<AuthUser>(authUser);
+    const [isRefreshingProfile, setIsRefreshingProfile] = useState(false);
+    const [profileNotice, setProfileNotice] = useState<string | null>(null);
+    const [profileError, setProfileError] = useState<string | null>(null);
+
     const [settings, setSettings] = useState<LauncherSettings>(defaultSettings);
     const [launcherContent, setLauncherContent] =
         useState<LauncherContent>(defaultContent);
@@ -242,6 +342,7 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
     const homeRef = useRef<HTMLElement | null>(null);
     const aboutRef = useRef<HTMLElement | null>(null);
     const settingsRef = useRef<HTMLElement | null>(null);
+    const profileRef = useRef<HTMLElement | null>(null);
     const newsRef = useRef<HTMLElement | null>(null);
 
     function scrollToSection(
@@ -346,7 +447,7 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
             const loaded = await invoke<LauncherSettings>("read_settings");
 
             setSettings({
-                username: loaded.username || authUser.nickname || defaultSettings.username,
+                username: loaded.username || currentUser.nickname || defaultSettings.username,
                 ramMin: loaded.ramMin || defaultSettings.ramMin,
                 ramMax: loaded.ramMax || defaultSettings.ramMax,
                 javaPath: loaded.javaPath || defaultSettings.javaPath,
@@ -520,6 +621,30 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
         }
     }
 
+    async function refreshProfile() {
+        try {
+            setIsRefreshingProfile(true);
+            setProfileNotice(null);
+            setProfileError(null);
+
+            const freshUser = await getCurrentUser(accessToken);
+
+            setCurrentUser(freshUser);
+            setProfileNotice("Профиль обновлён.");
+            addLog("OK", "Профиль аккаунта обновлён");
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Не удалось обновить профиль";
+
+            setProfileError(message);
+            addLog("ERR", `Не удалось обновить профиль: ${message}`);
+        } finally {
+            setIsRefreshingProfile(false);
+        }
+    }
+
     async function minimizeWindow() {
         try {
             await getCurrentWindow().minimize();
@@ -564,6 +689,10 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
             unlistenProgress?.();
         };
     }, []);
+
+    useEffect(() => {
+        setCurrentUser(authUser);
+    }, [authUser]);
 
     useEffect(() => {
         prepareRuntime();
@@ -630,6 +759,11 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
             : "Forge 1.19.2 · McDonalds Dnepr";
 
     const latestErrorLogs = logs.slice(-7);
+
+    const accountRole = getAccountRoleView(currentUser.role);
+    const accountStatus = getAccountStatusView(currentUser.status);
+    const isAdminAccount = currentUser.role === "admin";
+    const isAccountActive = currentUser.status === "active";
 
     return (
         <main className="app">
@@ -698,6 +832,14 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
                         </button>
 
                         <button
+                            className={`nav-item ${activeSection === "profile" ? "active" : ""}`}
+                            onClick={() => scrollToSection("profile", profileRef)}
+                        >
+                            <span>👤</span>
+                            Профиль
+                        </button>
+
+                        <button
                             className={`nav-item ${activeSection === "news" ? "active" : ""}`}
                             onClick={() => scrollToSection("news", newsRef)}
                         >
@@ -715,12 +857,12 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
                     <div className="profile-card account-card">
                         <div className="account-main">
                             <div className="profile-avatar">
-                                {authUser.nickname.slice(0, 1).toUpperCase() || "S"}
+                                {currentUser.nickname.slice(0, 1).toUpperCase() || "S"}
                             </div>
 
                             <div className="profile-meta">
-                                <div className="profile-name">{authUser.nickname}</div>
-                                <div className="profile-role">{maskEmail(authUser.email)}</div>
+                                <div className="profile-name">{currentUser.nickname}</div>
+                                <div className="profile-role">{maskEmail(currentUser.email)}</div>
                             </div>
                         </div>
 
@@ -779,6 +921,133 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
                                         </div>
                                     </div>
                                 </article>
+
+                                <section className="account-profile-section" ref={profileRef}>
+                                    <div className="account-profile-hero">
+                                        <div className="account-profile-main">
+                                            <div className="account-profile-avatar">
+                                                {currentUser.nickname.slice(0, 1).toUpperCase() || "S"}
+                                            </div>
+
+                                            <div className="account-profile-identity">
+                                                <div className="eyebrow">👤 Профиль аккаунта</div>
+
+                                                <div className="account-profile-title-row">
+                                                    <h2>{currentUser.nickname}</h2>
+
+                                                    <span className={`account-role-badge ${accountRole.className}`}>
+                                                        {accountRole.label}
+                                                    </span>
+
+                                                    {isAdminAccount && (
+                                                        <span className="account-admin-badge">
+                                                            ADMIN ACCESS
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <p>{maskEmail(currentUser.email)}</p>
+                                            </div>
+                                        </div>
+
+                                        <div className={`account-status-card ${accountStatus.className}`}>
+                                            <span>{accountStatus.label}</span>
+                                            <strong>{accountStatus.title}</strong>
+                                            <p>{accountStatus.description}</p>
+                                        </div>
+                                    </div>
+
+                                    {!isAccountActive && (
+                                        <div className={`account-warning ${accountStatus.className}`}>
+                                            <strong>Внимание</strong>
+                                            <p>{accountStatus.description}</p>
+                                        </div>
+                                    )}
+
+                                    <div className="account-profile-grid">
+                                        <article className="account-info-panel">
+                                            <div className="section-title compact">
+                                                <div>
+                                                    <span>ACCOUNT DATA</span>
+                                                    <h2>Данные аккаунта</h2>
+                                                </div>
+                                            </div>
+
+                                            <div className="account-info-list">
+                                                <div className="account-info-row">
+                                                    <span>Nickname</span>
+                                                    <strong>{currentUser.nickname}</strong>
+                                                </div>
+
+                                                <div className="account-info-row">
+                                                    <span>Email</span>
+                                                    <strong>{maskEmail(currentUser.email)}</strong>
+                                                </div>
+
+                                                <div className="account-info-row">
+                                                    <span>Role</span>
+                                                    <strong>{currentUser.role}</strong>
+                                                </div>
+
+                                                <div className="account-info-row">
+                                                    <span>Status</span>
+                                                    <strong>{currentUser.status}</strong>
+                                                </div>
+                                            </div>
+                                        </article>
+
+                                        <article className="account-info-panel">
+                                            <div className="section-title compact">
+                                                <div>
+                                                    <span>TIMELINE</span>
+                                                    <h2>Активность</h2>
+                                                </div>
+                                            </div>
+
+                                            <div className="account-info-list">
+                                                <div className="account-info-row">
+                                                    <span>Registered</span>
+                                                    <strong>{formatAuthDate(currentUser.registered_at)}</strong>
+                                                </div>
+
+                                                <div className="account-info-row">
+                                                    <span>Email verified</span>
+                                                    <strong>{formatAuthDate(currentUser.email_verified_at)}</strong>
+                                                </div>
+
+                                                <div className="account-info-row">
+                                                    <span>Last login</span>
+                                                    <strong>{formatAuthDate(currentUser.last_login_at)}</strong>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    {(profileNotice || profileError) && (
+                                        <div className={profileError ? "account-message error" : "account-message"}>
+                                            {profileError || profileNotice}
+                                        </div>
+                                    )}
+
+                                    <div className="account-actions">
+                                        <button
+                                            className="account-action-button"
+                                            onClick={() => void refreshProfile()}
+                                            disabled={isRefreshingProfile}
+                                        >
+                                            <span>↻</span>
+                                            {isRefreshingProfile ? "Обновляем..." : "Обновить профиль"}
+                                        </button>
+
+                                        <button
+                                            className="account-action-button danger"
+                                            onClick={onLogout}
+                                        >
+                                            <span>⏻</span>
+                                            Выйти из аккаунта
+                                        </button>
+                                    </div>
+                                </section>
 
                                 <section className="news-section" ref={newsRef}>
                                     <div className="section-title">
@@ -968,8 +1237,12 @@ function LauncherShell({ authUser, onLogout }: LauncherShellProps) {
 function App() {
     return (
         <AuthGate>
-            {({ user, logout }) => (
-                <LauncherShell authUser={user} onLogout={logout} />
+            {({ user, accessToken, logout }) => (
+                <LauncherShell
+                    authUser={user}
+                    accessToken={accessToken}
+                    onLogout={logout}
+                />
             )}
         </AuthGate>
     );
