@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -104,6 +104,15 @@ type LogItem = {
     text: string;
 };
 
+type SkinPreview = {
+    name: string;
+    size: number;
+    width: number;
+    height: number;
+    dataUrl: string;
+    updatedAt: string;
+};
+
 type NavSection = "home" | "builds" | "settings" | "profile" | "news";
 
 type LauncherShellProps = {
@@ -113,6 +122,7 @@ type LauncherShellProps = {
 };
 
 const SERVER_ADDRESS = "yarik_anime_studio.exaroton.me:46919";
+const SKIN_STORAGE_KEY = "sector27.launcher.skinPreview";
 
 const defaultSettings: LauncherSettings = {
     username: "Scorpy",
@@ -233,6 +243,78 @@ function formatAuthDate(value: string | null) {
     }).format(date);
 }
 
+function formatBytes(value: number) {
+    if (!Number.isFinite(value) || value <= 0) {
+        return "0 KB";
+    }
+
+    if (value >= 1024 * 1024) {
+        return `${(value / 1024 / 1024).toFixed(2)} MB`;
+    }
+
+    return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = () => {
+            if (typeof reader.result === "string") {
+                resolve(reader.result);
+                return;
+            }
+
+            reject(new Error("Не удалось прочитать PNG-файл."));
+        };
+
+        reader.onerror = () => {
+            reject(new Error("Не удалось прочитать PNG-файл."));
+        };
+
+        reader.readAsDataURL(file);
+    });
+}
+
+function readImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+
+        image.onload = () => {
+            resolve({
+                width: image.naturalWidth,
+                height: image.naturalHeight,
+            });
+        };
+
+        image.onerror = () => {
+            reject(new Error("Файл не похож на корректный PNG skin."));
+        };
+
+        image.src = dataUrl;
+    });
+}
+
+function readStoredSkinPreview(): SkinPreview | null {
+    try {
+        const raw = window.localStorage.getItem(SKIN_STORAGE_KEY);
+
+        if (!raw) {
+            return null;
+        }
+
+        const parsed = JSON.parse(raw) as SkinPreview;
+
+        if (!parsed.dataUrl || !parsed.width || !parsed.height) {
+            return null;
+        }
+
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
 function getAccountRoleView(role: string) {
     switch (role) {
         case "admin":
@@ -316,6 +398,13 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
     const [profileNotice, setProfileNotice] = useState<string | null>(null);
     const [profileError, setProfileError] = useState<string | null>(null);
 
+    const [skinPreview, setSkinPreview] = useState<SkinPreview | null>(() =>
+        readStoredSkinPreview()
+    );
+    const [skinNotice, setSkinNotice] = useState<string | null>(null);
+    const [skinError, setSkinError] = useState<string | null>(null);
+    const [isCheckingSkin, setIsCheckingSkin] = useState(false);
+
     const [settings, setSettings] = useState<LauncherSettings>(defaultSettings);
     const [launcherContent, setLauncherContent] =
         useState<LauncherContent>(defaultContent);
@@ -336,6 +425,7 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
     ]);
 
     const logsRef = useRef<HTMLDivElement | null>(null);
+    const skinInputRef = useRef<HTMLInputElement | null>(null);
 
     const [activeSection, setActiveSection] = useState<NavSection>("home");
 
@@ -521,10 +611,13 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         }
 
         try {
-            resetLaunchProgress("Подготовка профиля");
+            resetLaunchProgress("Проверка аккаунта");
             setIsLaunching(true);
             setIsUpdating(true);
 
+            await verifyAccountBeforeLaunch();
+
+            resetLaunchProgress("Подготовка профиля");
             addLog("INFO", `Подготовка профиля: ${settings.username}`);
             addLog("INFO", "Сохранение настроек запуска");
 
@@ -643,6 +736,99 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         } finally {
             setIsRefreshingProfile(false);
         }
+    }
+
+    async function verifyAccountBeforeLaunch() {
+        addLog("INFO", "Проверка статуса аккаунта перед запуском");
+
+        const freshUser = await getCurrentUser(accessToken);
+        setCurrentUser(freshUser);
+
+        if (freshUser.status !== "active") {
+            const statusView = getAccountStatusView(freshUser.status);
+
+            throw new Error(
+                `Запуск заблокирован: ${statusView.title}. ${statusView.description}`
+            );
+        }
+
+        addLog("OK", "Аккаунт активен, запуск разрешён");
+    }
+
+    function chooseSkinFile() {
+        setSkinNotice(null);
+        setSkinError(null);
+        skinInputRef.current?.click();
+    }
+
+    async function handleSkinFileChange(event: ChangeEvent<HTMLInputElement>) {
+        const file = event.target.files?.[0];
+
+        event.target.value = "";
+
+        if (!file) {
+            return;
+        }
+
+        setIsCheckingSkin(true);
+        setSkinNotice(null);
+        setSkinError(null);
+
+        try {
+            const lowerName = file.name.toLowerCase();
+            const isPng = file.type === "image/png" || lowerName.endsWith(".png");
+
+            if (!isPng) {
+                throw new Error("Можно выбрать только PNG-файл скина.");
+            }
+
+            if (file.size > 1024 * 1024) {
+                throw new Error("Файл слишком большой. Максимум 1 MB.");
+            }
+
+            const dataUrl = await readFileAsDataUrl(file);
+            const size = await readImageSize(dataUrl);
+
+            const isValidSkinSize =
+                (size.width === 64 && size.height === 64) ||
+                (size.width === 64 && size.height === 32);
+
+            if (!isValidSkinSize) {
+                throw new Error(
+                    `Неверный размер skin: ${size.width}x${size.height}. Нужен PNG 64x64 или 64x32.`
+                );
+            }
+
+            const nextSkin: SkinPreview = {
+                name: file.name,
+                size: file.size,
+                width: size.width,
+                height: size.height,
+                dataUrl,
+                updatedAt: new Date().toISOString(),
+            };
+
+            setSkinPreview(nextSkin);
+            window.localStorage.setItem(SKIN_STORAGE_KEY, JSON.stringify(nextSkin));
+            setSkinNotice("Skin проверен и сохранён локально для preview.");
+            addLog("OK", `Skin выбран: ${file.name} (${size.width}x${size.height})`);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Не удалось выбрать skin.";
+
+            setSkinError(message);
+            addLog("ERR", `Skin не принят: ${message}`);
+        } finally {
+            setIsCheckingSkin(false);
+        }
+    }
+
+    function clearSkinPreview() {
+        setSkinPreview(null);
+        setSkinNotice("Локальный skin preview очищен.");
+        setSkinError(null);
+        window.localStorage.removeItem(SKIN_STORAGE_KEY);
+        addLog("INFO", "Локальный skin preview очищен");
     }
 
     async function minimizeWindow() {
@@ -1117,6 +1303,83 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                                             Починить
                                         </button>
                                     </div>
+                                </article>
+
+                                <article className="skin-panel">
+                                    <div className="section-title compact">
+                                        <div>
+                                            <span>🧍 Minecraft Skin</span>
+                                            <h2>Скин игрока</h2>
+                                        </div>
+                                    </div>
+
+                                    <input
+                                        ref={skinInputRef}
+                                        className="skin-file-input"
+                                        type="file"
+                                        accept="image/png,.png"
+                                        onChange={(event) => void handleSkinFileChange(event)}
+                                    />
+
+                                    <div className="skin-preview-box">
+                                        {skinPreview ? (
+                                            <img
+                                                src={skinPreview.dataUrl}
+                                                alt="Minecraft skin preview"
+                                            />
+                                        ) : (
+                                            <div className="skin-preview-empty">
+                                                <span>PNG</span>
+                                                <p>64x64 или 64x32</p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="skin-meta">
+                                        <div>
+                                            <span>Файл</span>
+                                            <strong>{skinPreview?.name || "Не выбран"}</strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Размер</span>
+                                            <strong>
+                                                {skinPreview
+                                                    ? `${skinPreview.width}x${skinPreview.height} · ${formatBytes(skinPreview.size)}`
+                                                    : "PNG до 1 MB"}
+                                            </strong>
+                                        </div>
+                                    </div>
+
+                                    {(skinNotice || skinError) && (
+                                        <div className={skinError ? "skin-message error" : "skin-message"}>
+                                            {skinError || skinNotice}
+                                        </div>
+                                    )}
+
+                                    <div className="skin-actions">
+                                        <button
+                                            type="button"
+                                            onClick={chooseSkinFile}
+                                            disabled={isBusy || isCheckingSkin}
+                                        >
+                                            <span>🖼</span>
+                                            {isCheckingSkin ? "Проверяем..." : "Выбрать PNG"}
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={clearSkinPreview}
+                                            disabled={!skinPreview || isBusy}
+                                        >
+                                            <span>✕</span>
+                                            Очистить
+                                        </button>
+                                    </div>
+
+                                    <p className="skin-hint">
+                                        Сейчас это локальный preview. Следующим шагом подключим применение skin к Minecraft через выбранную схему.
+                                    </p>
                                 </article>
 
                                 <article className="settings-panel" ref={settingsRef}>
