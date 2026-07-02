@@ -1,4 +1,5 @@
 ﻿use serde::{Deserialize, Serialize};
+use sysinfo::System;
 use tauri::Emitter;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -58,6 +59,44 @@ struct RuntimeInfo {
     backups: String,
     runtime: String,
     runtime_file: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RamInfo {
+    total_bytes: u64,
+    available_bytes: u64,
+    total_gb: u64,
+    available_gb: u64,
+    recommended_min: String,
+    recommended_max: String,
+    warning_limit_gb: u64,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModScanFile {
+    name: String,
+    path: String,
+    size: u64,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModScanResult {
+    status: String,
+    mods_path: String,
+    expected_source: String,
+    expected_jar_count: u32,
+    installed_jar_count: u32,
+    extra_jar_files: Vec<ModScanFile>,
+    empty_jar_files: Vec<ModScanFile>,
+    suspicious_files: Vec<ModScanFile>,
+    nested_directories: Vec<String>,
+    issues: Vec<String>,
+    scanned_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,6 +349,260 @@ fn emit_progress(
     }
 }
 
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn sanitize_manifest_version(value: &str) -> String {
+    value
+        .replace('/', "_")
+        .replace('\\', "_")
+        .replace(':', "_")
+}
+
+fn normalize_manifest_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches('/').to_lowercase()
+}
+
+
+fn normalize_mod_entry_path(path: &str) -> Option<String> {
+    let normalized = normalize_manifest_path(path);
+
+    if normalized.starts_with("mods/") {
+        return Some(normalized);
+    }
+
+    if let Some(index) = normalized.find("/mods/") {
+        return Some(normalized[index + 1..].to_string());
+    }
+
+    None
+}
+
+fn make_mod_scan_file(path: &Path, base_dir: &Path, reason: &str) -> ModScanFile {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    let relative_path = path
+        .strip_prefix(base_dir)
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+
+    ModScanFile {
+        name,
+        path: relative_path,
+        size,
+        reason: reason.to_string(),
+    }
+}
+
+fn expected_mod_jars_from_manifest_files(manifest: &Manifest) -> HashSet<String> {
+    manifest
+        .files
+        .iter()
+        .map(|file| normalize_manifest_path(&file.path))
+        .filter(|path| path.starts_with("mods/") && path.ends_with(".jar"))
+        .collect::<HashSet<String>>()
+}
+
+fn expected_mod_jars_from_cached_pack(manifest: &Manifest) -> Result<HashSet<String>, String> {
+    if manifest.pack.is_none() {
+        return Ok(HashSet::new());
+    }
+
+    let safe_version = sanitize_manifest_version(&manifest.version);
+    let zip_path = downloads_cache_dir()?.join(format!("{}-{safe_version}.zip", manifest.id));
+
+    if !zip_path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let zip_file = File::open(&zip_path)
+        .map_err(|error| format!("Не удалось открыть cached pack.zip {}: {error}", zip_path.display()))?;
+
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .map_err(|error| format!("Не удалось прочитать cached pack.zip {}: {error}", zip_path.display()))?;
+
+    let mut expected = HashSet::new();
+
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Ошибка чтения cached pack.zip #{index}: {error}"))?;
+
+        if entry.is_dir() {
+            continue;
+        }
+
+        let Some(normalized) = normalize_mod_entry_path(entry.name()) else {
+            continue;
+        };
+
+        if normalized.ends_with(".jar") {
+            expected.insert(normalized);
+        }
+    }
+
+    Ok(expected)
+}
+
+fn load_expected_mod_jars() -> Result<(HashSet<String>, String), String> {
+    let manifest_cache_path = manifests_cache_dir()?.join("remote-manifest.json");
+
+    if !manifest_cache_path.exists() {
+        return Ok((HashSet::new(), "Нет cached remote manifest".to_string()));
+    }
+
+    let manifest: Manifest = read_json_file(&manifest_cache_path)?;
+    let expected_from_files = expected_mod_jars_from_manifest_files(&manifest);
+
+    if !expected_from_files.is_empty() {
+        return Ok((expected_from_files, "remote manifest files".to_string()));
+    }
+
+    let expected_from_pack = expected_mod_jars_from_cached_pack(&manifest)?;
+
+    if !expected_from_pack.is_empty() {
+        return Ok((expected_from_pack, "cached pack.zip".to_string()));
+    }
+
+    Ok((HashSet::new(), "Manifest не содержит список mods, cached pack.zip не найден".to_string()))
+}
+
+fn scan_instance_mods_internal() -> Result<ModScanResult, String> {
+    prepare_runtime()?;
+
+    let instance_dir = app_instance_dir(PROFILE_ID)?;
+    let mods_dir = instance_dir.join("mods");
+    let mut issues = Vec::new();
+    let mut installed_jar_count = 0u32;
+    let mut extra_jar_files = Vec::new();
+    let mut empty_jar_files = Vec::new();
+    let mut suspicious_files = Vec::new();
+    let mut nested_directories = Vec::new();
+
+    let (expected_jars, expected_source) = load_expected_mod_jars()?;
+    let expected_jar_count = expected_jars.len() as u32;
+
+    if !mods_dir.exists() {
+        issues.push("Папка mods не найдена. Запусти обновление или ремонт сборки.".to_string());
+
+        return Ok(ModScanResult {
+            status: "error".to_string(),
+            mods_path: path_to_string(&mods_dir),
+            expected_source,
+            expected_jar_count,
+            installed_jar_count,
+            extra_jar_files,
+            empty_jar_files,
+            suspicious_files,
+            nested_directories,
+            issues,
+            scanned_at: current_unix_timestamp(),
+        });
+    }
+
+    for entry in fs::read_dir(&mods_dir)
+        .map_err(|error| format!("Не удалось прочитать папку mods {}: {error}", mods_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Ошибка чтения элемента mods: {error}"))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let lower_name = name.to_lowercase();
+
+        if path.is_dir() {
+            nested_directories.push(name.clone());
+            issues.push(format!("В mods найдена вложенная папка: {name}"));
+            continue;
+        }
+
+        if !path.is_file() {
+            continue;
+        }
+
+        if lower_name.ends_with(".jar") {
+            installed_jar_count += 1;
+
+            let metadata = fs::metadata(&path)
+                .map_err(|error| format!("Не удалось прочитать файл {}: {error}", path.display()))?;
+
+            if metadata.len() == 0 {
+                empty_jar_files.push(make_mod_scan_file(
+                    &path,
+                    &mods_dir,
+                    "Пустой .jar файл, размер 0 байт",
+                ));
+            }
+
+            if !expected_jars.is_empty() {
+                let relative = normalize_manifest_path(&format!("mods/{name}"));
+
+                if !expected_jars.contains(&relative) {
+                    extra_jar_files.push(make_mod_scan_file(
+                        &path,
+                        &mods_dir,
+                        "Jar отсутствует в manifest/cached pack.zip",
+                    ));
+                }
+            }
+        } else {
+            suspicious_files.push(make_mod_scan_file(
+                &path,
+                &mods_dir,
+                "В папке mods лежит файл не .jar",
+            ));
+        }
+    }
+
+    if installed_jar_count == 0 {
+        issues.push("В папке mods не найдено ни одного .jar мода.".to_string());
+    }
+
+    if !empty_jar_files.is_empty() {
+        issues.push(format!("Пустых .jar файлов: {}", empty_jar_files.len()));
+    }
+
+    if !extra_jar_files.is_empty() {
+        issues.push(format!("Лишних .jar файлов: {}", extra_jar_files.len()));
+    }
+
+    if !suspicious_files.is_empty() {
+        issues.push(format!("Подозрительных файлов не .jar: {}", suspicious_files.len()));
+    }
+
+    let status = if !empty_jar_files.is_empty() || !extra_jar_files.is_empty() {
+        "warning"
+    } else if !suspicious_files.is_empty() || !nested_directories.is_empty() || installed_jar_count == 0 {
+        "warning"
+    } else {
+        "ok"
+    };
+
+    Ok(ModScanResult {
+        status: status.to_string(),
+        mods_path: path_to_string(&mods_dir),
+        expected_source,
+        expected_jar_count,
+        installed_jar_count,
+        extra_jar_files,
+        empty_jar_files,
+        suspicious_files,
+        nested_directories,
+        issues,
+        scanned_at: current_unix_timestamp(),
+    })
+}
+
 fn open_in_file_manager(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("Путь не найден: {}", path.display()));
@@ -434,6 +727,56 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} Б")
     }
+}
+
+fn normalize_sysinfo_memory_to_bytes(value: u64) -> u64 {
+    if value > 0 && value < 1024 * 1024 * 1024 {
+        value.saturating_mul(1024)
+    } else {
+        value
+    }
+}
+
+fn bytes_to_gb_rounded(bytes: u64) -> u64 {
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    ((bytes as f64 / GB).round() as u64).max(1)
+}
+
+fn recommended_ram_for_total(total_gb: u64) -> (String, String, String) {
+    if total_gb <= 8 {
+        return (
+            "2G".to_string(),
+            "4G".to_string(),
+            "Для ПК до 8 GB лучше оставить запас Windows и Discord, поэтому ставим 2G / 4G.".to_string(),
+        );
+    }
+
+    if total_gb <= 16 {
+        return (
+            "2G".to_string(),
+            "6G".to_string(),
+            "Для 16 GB RAM оптимально 2G / 6G: сборке хватит, система не будет задыхаться.".to_string(),
+        );
+    }
+
+    if total_gb <= 32 {
+        return (
+            "3G".to_string(),
+            "8G".to_string(),
+            "Для 32 GB RAM можно дать сборке больше пространства: 3G / 8G.".to_string(),
+        );
+    }
+
+    (
+        "4G".to_string(),
+        "10G".to_string(),
+        "Для 64 GB RAM и выше безопасно поставить 4G / 10G. Больше обычно не нужно для этой сборки.".to_string(),
+    )
+}
+
+fn ram_warning_limit(total_gb: u64) -> u64 {
+    ((total_gb as f64 * 0.65).floor() as u64).max(4)
 }
 
 fn download_file_with_curl(
@@ -2497,6 +2840,34 @@ fn build_java_args(
 }
 
 #[tauri::command]
+fn get_ram_info() -> Result<RamInfo, String> {
+    let mut system = System::new_all();
+    system.refresh_memory();
+
+    let total_bytes = normalize_sysinfo_memory_to_bytes(system.total_memory());
+    let available_bytes = normalize_sysinfo_memory_to_bytes(system.available_memory());
+
+    if total_bytes == 0 {
+        return Err("Не удалось определить объём RAM системы".to_string());
+    }
+
+    let total_gb = bytes_to_gb_rounded(total_bytes);
+    let available_gb = bytes_to_gb_rounded(available_bytes);
+    let (recommended_min, recommended_max, note) = recommended_ram_for_total(total_gb);
+
+    Ok(RamInfo {
+        total_bytes,
+        available_bytes,
+        total_gb,
+        available_gb,
+        recommended_min,
+        recommended_max,
+        warning_limit_gb: ram_warning_limit(total_gb),
+        note,
+    })
+}
+
+#[tauri::command]
 fn prepare_runtime() -> Result<RuntimeInfo, String> {
     let root = app_data_root()?;
     let launcher_data = launcher_data_dir()?;
@@ -2809,6 +3180,14 @@ fn get_server_status_blocking() -> Result<serde_json::Value, String> {
     }
 }
 
+
+#[tauri::command]
+async fn scan_instance_mods() -> Result<ModScanResult, String> {
+    tauri::async_runtime::spawn_blocking(scan_instance_mods_internal)
+        .await
+        .map_err(|error| format!("Фоновая задача проверки mods сорвалась: {error}"))?
+}
+
 #[tauri::command]
 fn open_game_folder() -> Result<(), String> {
     prepare_runtime()?;
@@ -2951,7 +3330,9 @@ pub fn run() {
             open_logs_folder,
             read_launcher_content,
             get_server_status,
-            append_launcher_log
+            append_launcher_log,
+            get_ram_info,
+            scan_instance_mods
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

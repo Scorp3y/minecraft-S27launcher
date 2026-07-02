@@ -28,6 +28,12 @@ type LauncherContent = {
         ping: string;
         version: string;
     };
+    maintenance: {
+        enabled: boolean;
+        title: string;
+        message: string;
+        allowAdmins: boolean;
+    };
     news: {
         tag: string;
         title: string;
@@ -97,6 +103,17 @@ type RuntimeInfo = {
     runtimeFile: string;
 };
 
+type RamInfo = {
+    totalBytes: number;
+    availableBytes: number;
+    totalGb: number;
+    availableGb: number;
+    recommendedMin: string;
+    recommendedMax: string;
+    warningLimitGb: number;
+    note: string;
+};
+
 type LogType = "INFO" | "OK" | "ERR";
 
 type LogItem = {
@@ -113,6 +130,27 @@ type SkinPreview = {
     updatedAt: string;
 };
 
+type ModScanFile = {
+    name: string;
+    path: string;
+    size: number;
+    reason: string;
+};
+
+type ModScanResult = {
+    status: "ok" | "warning" | "error" | string;
+    modsPath: string;
+    expectedSource: string;
+    expectedJarCount: number;
+    installedJarCount: number;
+    extraJarFiles: ModScanFile[];
+    emptyJarFiles: ModScanFile[];
+    suspiciousFiles: ModScanFile[];
+    nestedDirectories: string[];
+    issues: string[];
+    scannedAt: number;
+};
+
 type NavSection = "home" | "builds" | "settings" | "profile" | "news";
 
 type LauncherShellProps = {
@@ -121,7 +159,6 @@ type LauncherShellProps = {
     onLogout: () => void;
 };
 
-const SERVER_ADDRESS = "yarik_anime_studio.exaroton.me:46919";
 const SKIN_STORAGE_KEY = "sector27.launcher.skinPreview";
 
 const defaultSettings: LauncherSettings = {
@@ -146,6 +183,12 @@ const defaultContent: LauncherContent = {
         players: "24 / 100",
         ping: "34 ms",
         version: "Forge 1.19.2 · 43.4.12",
+    },
+    maintenance: {
+        enabled: false,
+        title: "Технические работы",
+        message: "Сервер временно недоступен. Следите за новостями SECTOR 27.",
+        allowAdmins: true,
     },
     news: [
         {
@@ -248,11 +291,35 @@ function formatBytes(value: number) {
         return "0 KB";
     }
 
+    if (value >= 1024 * 1024 * 1024) {
+        return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+    }
+
     if (value >= 1024 * 1024) {
         return `${(value / 1024 / 1024).toFixed(2)} MB`;
     }
 
     return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function parseRamGigabytes(value: string) {
+    const match = value.trim().toUpperCase().match(/^(\d+(?:\.\d+)?)G$/);
+
+    if (!match) {
+        return 0;
+    }
+
+    return Number(match[1]);
+}
+
+function formatRamLabel(value: string) {
+    const gb = parseRamGigabytes(value);
+
+    if (!gb) {
+        return value;
+    }
+
+    return `${gb} GB`;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -410,6 +477,13 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         useState<LauncherContent>(defaultContent);
 
     const [serverStatus, setServerStatus] = useState<LiveServerStatus | null>(null);
+    const [ramInfo, setRamInfo] = useState<RamInfo | null>(null);
+    const [ramNotice, setRamNotice] = useState<string | null>(null);
+    const [ramError, setRamError] = useState<string | null>(null);
+
+    const [modScanResult, setModScanResult] = useState<ModScanResult | null>(null);
+    const [isScanningMods, setIsScanningMods] = useState(false);
+    const [modScanError, setModScanError] = useState<string | null>(null);
 
     const [isLaunching, setIsLaunching] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
@@ -516,6 +590,11 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         key: K,
         value: LauncherSettings[K]
     ) {
+        if (key === "ramMin" || key === "ramMax") {
+            setRamNotice(null);
+            setRamError(null);
+        }
+
         setSettings((prev) => ({
             ...prev,
             [key]: value,
@@ -566,6 +645,10 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                     ...defaultContent.server,
                     ...loaded.server,
                 },
+                maintenance: {
+                    ...defaultContent.maintenance,
+                    ...loaded.maintenance,
+                },
                 news:
                     loaded.news && loaded.news.length > 0
                         ? loaded.news
@@ -577,6 +660,73 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
             console.error(error);
             setLauncherContent(defaultContent);
             addLog("ERR", `Не удалось загрузить контент: ${String(error)}`);
+        }
+    }
+
+    async function loadRamInfo() {
+        try {
+            const info = await invoke<RamInfo>("get_ram_info");
+
+            setRamInfo(info);
+            setRamError(null);
+            addLog(
+                "OK",
+                `RAM системы: ${info.totalGb} GB · рекомендовано ${info.recommendedMin} - ${info.recommendedMax}`
+            );
+        } catch (error) {
+            console.error(error);
+            setRamError(`Не удалось получить RAM системы: ${String(error)}`);
+            addLog("ERR", `Не удалось получить RAM системы: ${String(error)}`);
+        }
+    }
+
+    function applyRecommendedRam() {
+        if (!ramInfo) {
+            setRamError("Информация о RAM ещё не загружена.");
+            return;
+        }
+
+        setSettings((prev) => ({
+            ...prev,
+            ramMin: ramInfo.recommendedMin,
+            ramMax: ramInfo.recommendedMax,
+        }));
+
+        setRamError(null);
+        setRamNotice(
+            `Применено: ${formatRamLabel(ramInfo.recommendedMin)} - ${formatRamLabel(ramInfo.recommendedMax)}`
+        );
+        addLog(
+            "OK",
+            `RAM авто: ${ramInfo.recommendedMin} - ${ramInfo.recommendedMax}`
+        );
+    }
+
+
+    async function scanInstanceMods() {
+        try {
+            setIsScanningMods(true);
+            setModScanError(null);
+
+            const result = await invoke<ModScanResult>("scan_instance_mods");
+
+            setModScanResult(result);
+
+            if (result.status === "ok") {
+                addLog("OK", `Mods scanner: ${result.installedJarCount} .jar, проблем нет`);
+            } else {
+                addLog(
+                    "ERR",
+                    `Mods scanner: найдено проблем: ${result.issues.length}`
+                );
+            }
+        } catch (error) {
+            const message = String(error);
+
+            setModScanError(message);
+            addLog("ERR", `Mods scanner failed: ${message}`);
+        } finally {
+            setIsScanningMods(false);
         }
     }
 
@@ -607,6 +757,21 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         if (!settings.username.trim()) {
             addLog("ERR", "Введите ник игрока");
             setLaunchError("Введите ник игрока");
+            return;
+        }
+
+        if (isLaunchBlockedByMaintenance) {
+            const message = `${launcherContent.maintenance.title}: ${launcherContent.maintenance.message}`;
+
+            addLog("ERR", "Запуск заблокирован: maintenance mode");
+            addLog("ERR", message);
+            setLaunchError(message);
+            setLaunchProgress({
+                currentStep: "prepare",
+                message,
+                percent: 0,
+                status: "error",
+            });
             return;
         }
 
@@ -884,6 +1049,7 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
         prepareRuntime();
         loadSettings();
         loadLauncherContent();
+        loadRamInfo();
         loadServerStatus();
 
         const interval = window.setInterval(() => {
@@ -929,18 +1095,29 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
     const isBusy = isLaunching || isUpdating || isRepairing;
     const showMiniProgress = isBusy;
 
+    const maintenance = launcherContent.maintenance;
+    const isMaintenanceEnabled = maintenance.enabled;
+    const canBypassMaintenance = Boolean(
+        isMaintenanceEnabled && maintenance.allowAdmins && currentUser.role === "admin"
+    );
+    const isLaunchBlockedByMaintenance = isMaintenanceEnabled && !canBypassMaintenance;
+    const maintenanceBadgeLabel = canBypassMaintenance ? "ADMIN BYPASS" : "MAINTENANCE";
+
     const activeStep =
         launchSteps.find((step) => step.id === launchProgress.currentStep)?.label ??
         "Выполняется";
 
-    const playButtonTitle = isRepairing
-        ? "Ремонт"
-        : isLaunching
-            ? "Запуск"
-            : "Играть";
+    const playButtonTitle = isLaunchBlockedByMaintenance
+        ? "Техработы"
+        : isRepairing
+            ? "Ремонт"
+            : isLaunching
+                ? "Запуск"
+                : "Играть";
 
-    const playButtonSubtitle =
-        isBusy && launchProgress.message
+    const playButtonSubtitle = isLaunchBlockedByMaintenance
+        ? launcherContent.maintenance.title
+        : isBusy && launchProgress.message
             ? launchProgress.message
             : "Forge 1.19.2 · McDonalds Dnepr";
 
@@ -950,6 +1127,28 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
     const accountStatus = getAccountStatusView(currentUser.status);
     const isAdminAccount = currentUser.role === "admin";
     const isAccountActive = currentUser.status === "active";
+
+    const selectedMaxRamGb = parseRamGigabytes(settings.ramMax);
+    const selectedMinRamGb = parseRamGigabytes(settings.ramMin);
+    const isRamTooHigh = Boolean(
+        ramInfo && selectedMaxRamGb > ramInfo.warningLimitGb
+    );
+    const isRamRangeInvalid = Boolean(
+        selectedMinRamGb && selectedMaxRamGb && selectedMinRamGb > selectedMaxRamGb
+    );
+
+    const modScanIssueCount = modScanResult?.issues.length ?? 0;
+
+    const modScanStatusLabel = !modScanResult
+        ? "IDLE"
+        : modScanResult.status === "ok"
+            ? "OK"
+            : modScanResult.status === "warning"
+                ? "WARNING"
+                : modScanResult.status === "error"
+                    ? "ERROR"
+                    : modScanResult.status.toUpperCase();
+
 
     return (
         <main className="app">
@@ -1087,6 +1286,22 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                                         </div>
                                     </div>
                                 </article>
+
+                                {isMaintenanceEnabled && (
+                                    <article className={`maintenance-banner ${canBypassMaintenance ? "admin" : "blocked"}`}>
+                                        <div>
+                                            <span>{maintenanceBadgeLabel}</span>
+                                            <h2>{maintenance.title}</h2>
+                                            <p>{maintenance.message}</p>
+                                        </div>
+
+                                        <strong>
+                                            {canBypassMaintenance
+                                                ? "Администратор может запускать"
+                                                : "Запуск временно заблокирован"}
+                                        </strong>
+                                    </article>
+                                )}
 
                                 <article className="about-wide" ref={aboutRef}>
                                     <div className="eyebrow">📦 О сборке</div>
@@ -1266,7 +1481,7 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                                     <button
                                         className="play-button"
                                         onClick={launchMinecraft}
-                                        disabled={isBusy}
+                                        disabled={isBusy || isLaunchBlockedByMaintenance}
                                     >
                                         <span>{playButtonTitle}</span>
                                         <small>{playButtonSubtitle}</small>
@@ -1382,6 +1597,118 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                                     </p>
                                 </article>
 
+                                <article className="mod-scan-panel">
+                                    <div className="section-title compact">
+                                        <div>
+                                            <span>🧪 Mod Scanner</span>
+                                            <h2>Проверка mods</h2>
+                                        </div>
+                                    </div>
+
+                                    <div className={`mod-scan-status ${modScanResult?.status || "idle"}`}>
+                                        <span>{modScanStatusLabel}</span>
+                                        <strong>
+                                            {modScanResult
+                                                ? `${modScanResult.installedJarCount} .jar · проблем: ${modScanIssueCount}`
+                                                : "Проверка ещё не запускалась"}
+                                        </strong>
+                                    </div>
+
+                                    <div className="mod-scan-grid">
+                                        <div>
+                                            <span>Ожидается</span>
+                                            <strong>
+                                                {modScanResult?.expectedJarCount
+                                                    ? `${modScanResult.expectedJarCount} .jar`
+                                                    : "—"}
+                                            </strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Источник</span>
+                                            <strong>{modScanResult?.expectedSource || "—"}</strong>
+                                        </div>
+                                    </div>
+
+                                    {modScanResult?.issues.length ? (
+                                        <div className="mod-scan-issues">
+                                            {modScanResult.issues.slice(0, 4).map((issue, index) => (
+                                                <p key={index}>{issue}</p>
+                                            ))}
+                                        </div>
+                                    ) : null}
+
+                                    {modScanResult && (
+                                        <div className="mod-scan-lists">
+                                            {modScanResult.extraJarFiles.length > 0 && (
+                                                <div>
+                                                    <span>Лишние .jar</span>
+                                                    {modScanResult.extraJarFiles.slice(0, 4).map((file) => (
+                                                        <p key={file.path}>{file.name} · {formatBytes(file.size)}</p>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {modScanResult.emptyJarFiles.length > 0 && (
+                                                <div>
+                                                    <span>Пустые .jar</span>
+                                                    {modScanResult.emptyJarFiles.slice(0, 4).map((file) => (
+                                                        <p key={file.path}>{file.name}</p>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {modScanResult.suspiciousFiles.length > 0 && (
+                                                <div>
+                                                    <span>Не .jar файлы</span>
+                                                    {modScanResult.suspiciousFiles.slice(0, 4).map((file) => (
+                                                        <p key={file.path}>{file.name} · {formatBytes(file.size)}</p>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {modScanResult.nestedDirectories.length > 0 && (
+                                                <div>
+                                                    <span>Папки внутри mods</span>
+                                                    {modScanResult.nestedDirectories.slice(0, 4).map((name) => (
+                                                        <p key={name}>{name}</p>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {modScanError && (
+                                        <div className="mod-scan-message error">
+                                            {modScanError}
+                                        </div>
+                                    )}
+
+                                    <div className="mod-scan-actions">
+                                        <button
+                                            type="button"
+                                            onClick={() => void scanInstanceMods()}
+                                            disabled={isBusy || isScanningMods}
+                                        >
+                                            <span>🔍</span>
+                                            {isScanningMods ? "Проверяем..." : "Проверить mods"}
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={repairInstance}
+                                            disabled={isBusy || isScanningMods}
+                                        >
+                                            <span>🛠</span>
+                                            Починить
+                                        </button>
+                                    </div>
+
+                                    <p className="mod-scan-hint">
+                                        Сканер пока только показывает проблемы. Автоудаление лишних файлов подключим отдельным безопасным этапом.
+                                    </p>
+                                </article>
+
                                 <article className="settings-panel" ref={settingsRef}>
                                     <div className="section-title compact">
                                         <div>
@@ -1446,6 +1773,60 @@ function LauncherShell({ authUser, accessToken, onLogout }: LauncherShellProps) 
                                                 <option value="12G">12 GB</option>
                                             </select>
                                         </label>
+                                    </div>
+
+                                    <div className="ram-advisor-card">
+                                        <div className="ram-advisor-top">
+                                            <div>
+                                                <span>RAM Advisor</span>
+                                                <strong>
+                                                    {ramInfo
+                                                        ? `${ramInfo.totalGb} GB установлено · ${ramInfo.availableGb} GB свободно`
+                                                        : "Определяем RAM системы..."}
+                                                </strong>
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                className="ram-auto-button"
+                                                onClick={applyRecommendedRam}
+                                                disabled={!ramInfo || isBusy}
+                                            >
+                                                Авто
+                                            </button>
+                                        </div>
+
+                                        <p>
+                                            {ramInfo
+                                                ? ramInfo.note
+                                                : "Лаунчер получит объём RAM через Rust backend и предложит безопасные значения для сборки."}
+                                        </p>
+
+                                        {ramInfo && (
+                                            <div className="ram-recommendation">
+                                                <span>Рекомендовано</span>
+                                                <strong>
+                                                    {formatRamLabel(ramInfo.recommendedMin)} - {formatRamLabel(ramInfo.recommendedMax)}
+                                                </strong>
+                                            </div>
+                                        )}
+
+                                        {(ramNotice || ramError || isRamTooHigh || isRamRangeInvalid) && (
+                                            <div
+                                                className={
+                                                    ramError || isRamTooHigh || isRamRangeInvalid
+                                                        ? "ram-message error"
+                                                        : "ram-message"
+                                                }
+                                            >
+                                                {ramError ||
+                                                    (isRamRangeInvalid
+                                                        ? "Min RAM не должен быть больше Max RAM."
+                                                        : isRamTooHigh
+                                                            ? `Выбрано ${settings.ramMax}, это слишком много для ${ramInfo?.totalGb ?? "?"} GB RAM. Лучше не поднимать выше ${ramInfo?.warningLimitGb ?? "?"}G.`
+                                                            : ramNotice)}
+                                            </div>
+                                        )}
                                     </div>
 
                                     <label className="switch-field">

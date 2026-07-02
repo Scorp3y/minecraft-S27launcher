@@ -721,6 +721,103 @@ button {
     gap: 10px;
 }
 
+
+.ram-advisor-card {
+    margin-top: 2px;
+    margin-bottom: 11px;
+    padding: 12px;
+    border-radius: 16px;
+    background: rgba(0, 248, 255, 0.045);
+    border: 1px solid rgba(0, 248, 255, 0.12);
+}
+
+.ram-advisor-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+    .ram-advisor-top span,
+    .ram-recommendation span {
+        display: block;
+        color: var(--muted-2);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    .ram-advisor-top strong {
+        display: block;
+        margin-top: 4px;
+        color: rgba(238, 252, 255, 0.84);
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1.35;
+    }
+
+.ram-auto-button {
+    min-width: 66px;
+    min-height: 34px;
+    padding: 0 11px;
+    border-radius: 12px;
+    color: #001317;
+    background: linear-gradient(135deg, var(--cyan), var(--green));
+    font-size: 11px;
+    font-weight: 900;
+    transition: 0.14s ease;
+}
+
+    .ram-auto-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(0, 248, 255, 0.16);
+    }
+
+.ram-advisor-card p {
+    margin: 9px 0 0;
+    color: rgba(238, 252, 255, 0.52);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.ram-recommendation {
+    margin-top: 9px;
+    padding: 9px 10px;
+    border-radius: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(0, 248, 255, 0.1);
+}
+
+    .ram-recommendation strong {
+        color: var(--green);
+        font-family: "Consolas", "Cascadia Mono", monospace;
+        font-size: 12px;
+        font-weight: 900;
+    }
+
+.ram-message {
+    margin-top: 9px;
+    padding: 9px 10px;
+    border-radius: 13px;
+    color: var(--green);
+    background: rgba(0, 255, 163, 0.08);
+    border: 1px solid rgba(0, 255, 163, 0.15);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.35;
+}
+
+    .ram-message.error {
+        color: var(--yellow);
+        background: rgba(255, 200, 87, 0.08);
+        border-color: rgba(255, 200, 87, 0.22);
+    }
+
 .switch-field {
     min-height: 44px;
     padding: 10px;
@@ -1470,14 +1567,296 @@ button {
     line-height: 1.45;
 }
 
+
+.mod-scan-panel {
+    padding: 16px;
+    border-radius: 22px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.2);
+}
+
+.mod-scan-status {
+    padding: 11px;
+    border-radius: 15px;
+    display: grid;
+    gap: 5px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--line-soft);
+}
+
+    .mod-scan-status span {
+        width: fit-content;
+        min-height: 23px;
+        padding: 0 8px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        color: rgba(238, 252, 255, 0.72);
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+    }
+
+    .mod-scan-status.ok span {
+        color: #001317;
+        background: linear-gradient(135deg, var(--cyan), var(--green));
+    }
+
+    .mod-scan-status.warning span {
+        color: #251600;
+        background: var(--yellow);
+    }
+
+    .mod-scan-status.error span {
+        color: #fff;
+        background: rgba(255, 85, 112, 0.9);
+    }
+
+    .mod-scan-status strong {
+        color: rgba(238, 252, 255, 0.86);
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1.35;
+    }
+
+.mod-scan-grid {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+    .mod-scan-grid div {
+        min-width: 0;
+        min-height: 42px;
+        padding: 9px 10px;
+        border-radius: 13px;
+        display: grid;
+        gap: 4px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line-soft);
+    }
+
+    .mod-scan-grid span,
+    .mod-scan-lists span {
+        color: var(--muted-2);
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
+    .mod-scan-grid strong {
+        min-width: 0;
+        color: rgba(238, 252, 255, 0.86);
+        font-family: "Consolas", "Cascadia Mono", monospace;
+        font-size: 11px;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+    }
+
+.mod-scan-issues {
+    margin-top: 10px;
+    display: grid;
+    gap: 6px;
+}
+
+    .mod-scan-issues p {
+        margin: 0;
+        padding: 8px 9px;
+        border-radius: 12px;
+        color: var(--yellow);
+        background: rgba(255, 200, 87, 0.08);
+        border: 1px solid rgba(255, 200, 87, 0.18);
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.35;
+    }
+
+.mod-scan-lists {
+    margin-top: 10px;
+    display: grid;
+    gap: 8px;
+}
+
+    .mod-scan-lists div {
+        padding: 9px 10px;
+        border-radius: 13px;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(0, 248, 255, 0.08);
+    }
+
+    .mod-scan-lists p {
+        margin: 6px 0 0;
+        color: rgba(238, 252, 255, 0.72);
+        font-family: "Consolas", "Cascadia Mono", monospace;
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+    }
+
+.mod-scan-message {
+    margin-top: 10px;
+    padding: 10px 11px;
+    border-radius: 13px;
+    color: var(--green);
+    background: rgba(0, 255, 163, 0.08);
+    border: 1px solid rgba(0, 255, 163, 0.16);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.35;
+}
+
+    .mod-scan-message.error {
+        color: var(--red);
+        background: rgba(255, 85, 112, 0.08);
+        border-color: rgba(255, 85, 112, 0.22);
+    }
+
+.mod-scan-actions {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+    .mod-scan-actions button {
+        min-height: 40px;
+        padding: 0 10px;
+        border-radius: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        color: rgba(238, 252, 255, 0.78);
+        background: var(--panel-2);
+        border: 1px solid var(--line-soft);
+        font-size: 11px;
+        font-weight: 900;
+        transition: 0.14s ease;
+    }
+
+        .mod-scan-actions button:hover {
+            color: #fff;
+            background: rgba(0, 248, 255, 0.075);
+            border-color: rgba(0, 248, 255, 0.18);
+        }
+
+.mod-scan-hint {
+    margin: 10px 0 0;
+    color: rgba(238, 252, 255, 0.42);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
 @media (max-width: 1200px) {
-    .skin-panel {
+    .skin-panel,
+    .mod-scan-panel {
         min-height: 0;
     }
 }
 
 @media (max-width: 640px) {
-    .skin-actions {
+    .ram-advisor-top,
+    .ram-recommendation {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .ram-auto-button {
+        width: 100%;
+    }
+
+    .skin-actions,
+    .mod-scan-actions,
+    .mod-scan-grid {
         grid-template-columns: 1fr;
     }
+}
+
+.maintenance-banner {
+    padding: 16px 18px;
+    border-radius: 22px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    background: rgba(255, 200, 87, 0.075);
+    border: 1px solid rgba(255, 200, 87, 0.22);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.2);
+}
+
+    .maintenance-banner.blocked {
+        background: rgba(255, 85, 112, 0.08);
+        border-color: rgba(255, 85, 112, 0.24);
+    }
+
+    .maintenance-banner.admin {
+        background: rgba(0, 248, 255, 0.055);
+        border-color: rgba(0, 248, 255, 0.18);
+    }
+
+    .maintenance-banner span {
+        width: fit-content;
+        min-height: 24px;
+        padding: 0 9px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        color: #251600;
+        background: var(--yellow);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+    }
+
+    .maintenance-banner.blocked span {
+        color: #fff;
+        background: rgba(255, 85, 112, 0.92);
+    }
+
+    .maintenance-banner.admin span {
+        color: #001317;
+        background: linear-gradient(135deg, var(--cyan), var(--green));
+    }
+
+    .maintenance-banner h2 {
+        margin: 10px 0 0;
+        font-size: 22px;
+        line-height: 1.05;
+        font-weight: 900;
+        letter-spacing: -0.035em;
+    }
+
+    .maintenance-banner p {
+        margin: 7px 0 0;
+        color: rgba(238, 252, 255, 0.64);
+        font-size: 13px;
+        line-height: 1.45;
+    }
+
+    .maintenance-banner > strong {
+        max-width: 190px;
+        padding: 10px 12px;
+        border-radius: 15px;
+        color: rgba(238, 252, 255, 0.82);
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1.35;
+        text-align: right;
+    }
+
+@media (max-width: 900px) {
+    .maintenance-banner {
+        grid-template-columns: 1fr;
+    }
+
+        .maintenance-banner > strong {
+            max-width: none;
+            text-align: left;
+        }
 }
