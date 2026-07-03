@@ -8,11 +8,14 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     config::AppConfig,
-    modules::{auth::auth_routes, users::user_routes},
+    modules::{
+        auth::auth_routes,
+        error_reports::error_report_routes,
+        users::user_routes,
+    },
 };
 
 #[derive(Clone)]
-
 pub struct AppState {
     pub db: PgPool,
 
@@ -20,7 +23,6 @@ pub struct AppState {
 }
 
 #[derive(Serialize)]
-
 struct HealthResponse {
     status: &'static str,
 
@@ -28,7 +30,6 @@ struct HealthResponse {
 }
 
 #[derive(Serialize)]
-
 struct DbHealthResponse {
     status: &'static str,
 
@@ -41,6 +42,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/health/db", get(health_db))
         .merge(auth_routes::routes())
         .merge(user_routes::routes())
+        .merge(error_report_routes::routes())
         .with_state(state)
         .layer(CorsLayer::permissive())
 }
